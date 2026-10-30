@@ -4,7 +4,11 @@ import time
 import threading
 from pathlib import Path
 from flask import Flask, render_template, jsonify, request, send_from_directory, Response
-from flask_cors import CORS
+try:
+    from flask_cors import CORS
+    HAVE_CORS = True
+except ImportError:
+    HAVE_CORS = False
 
 from camera import CameraManager
 from chess_vision import ChessVisionManager
@@ -15,7 +19,8 @@ from dataset_collector import DatasetCollector
 from onnx_classifier import OnnxPieceClassifier
 
 app = Flask(__name__)
-CORS(app)
+if HAVE_CORS:
+    CORS(app)
 
 logs_history = []
 def log(msg):
