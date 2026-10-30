@@ -4,15 +4,10 @@ let editingCorners = false;
 let activeDragCorner = null;
 let currentCornersNorm = [[0.2, 0.15], [0.8, 0.15], [0.85, 0.85], [0.15, 0.85]];
 
-// Mode 4 clics guidés
+// Mode 4 clics guidés (dans n'importe quel ordre !)
 let guide4PointsMode = false;
-let guide4PointsStep = 0; // 0: A8, 1: H8, 2: H1, 3: A1
-const GUIDE_STEP_LABELS = [
-    "Cliquez sur le coin A8 (Haut-Gauche)",
-    "Cliquez sur le coin H8 (Haut-Droite)",
-    "Cliquez sur le coin H1 (Bas-Droite)",
-    "Cliquez sur le coin A1 (Bas-Gauche)"
-];
+let clickedPointsNorm = []; // Liste des clics bruts [ [x, y], ... ]
+let lastMousePos = null;    // Pour effet réticule / curseur interactif
 
 const PIECE_UNICODE = {
     'P': '♙', 'N': '♘', 'B': '♗', 'R': '♖', 'Q': '♕', 'K': '♔',
@@ -386,9 +381,37 @@ function pollLogs() {
         });
 }
 
+function getImageRenderInfo() {
+    const img = document.getElementById('cam-stream');
+    const container = document.getElementById('viewport-box');
+    if (!img || !img.naturalWidth || !container) {
+        return null;
+    }
+
+    const containerW = container.clientWidth;
+    const containerH = container.clientHeight;
+    const imgNatW = img.naturalWidth;
+    const imgNatH = img.naturalHeight;
+
+    const scale = Math.min(containerW / imgNatW, containerH / imgNatH);
+    const renderedW = imgNatW * scale;
+    const renderedH = imgNatH * scale;
+
+    const offsetX = (containerW - renderedW) / 2;
+    const offsetY = (containerH - renderedH) / 2;
+
+    return {
+        containerW, containerH,
+        renderedW, renderedH,
+        offsetX, offsetY,
+        scale,
+        imgNatW, imgNatH
+    };
+}
+
 function start4PointsGuide() {
     guide4PointsMode = true;
-    guide4PointsStep = 0;
+    clickedPointsNorm = [];
     editingCorners = false;
 
     const canvas = document.getElementById('interactive-canvas');
@@ -396,39 +419,18 @@ function start4PointsGuide() {
     resizeCanvas();
 
     const banner = document.getElementById('banner-action');
-    banner.innerText = `🎯 Mode 4 Clics : [Étape 1/4] ${GUIDE_STEP_LABELS[0]}`;
+    banner.innerText = `🎯 Mode 4 Clics : Cliquez sur n'importe lequel des 4 coins (0/4)`;
     document.getElementById('btn-guide-4pts').classList.add('active');
-    drawCornersOverlay();
-}
-
-// --- Drag & Drop interactif des 4 coins sur le Canvas ---
-function toggleEditCorners() {
-    editingCorners = !editingCorners;
-    const btn = document.getElementById('btn-edit-corners');
-    const canvas = document.getElementById('interactive-canvas');
-
-    if (editingCorners) {
-        btn.classList.add('active');
-        btn.innerText = '💾 Sauvegarder Coins';
-        canvas.classList.add('interactive');
-        resizeCanvas();
-        drawCornersOverlay();
-    } else {
-        btn.classList.remove('active');
-        btn.innerText = '📐 Ajuster 4 Coins (Manuel)';
-        canvas.classList.remove('interactive');
-        postJSON('/api/vision/corners', { corners: currentCornersNorm });
-        clearCanvas();
-    }
+    drawOverlay();
 }
 
 function resizeCanvas() {
-    const img = document.getElementById('cam-stream');
+    const container = document.getElementById('viewport-box');
     const canvas = document.getElementById('interactive-canvas');
-    if (img && canvas) {
-        canvas.width = img.clientWidth;
-        canvas.height = img.clientHeight;
-        drawCornersOverlay();
+    if (container && canvas) {
+        canvas.width = container.clientWidth;
+        canvas.height = container.clientHeight;
+        drawOverlay();
     }
 }
 
@@ -440,108 +442,233 @@ function clearCanvas() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 }
 
-function drawCornersOverlay() {
-    if (!editingCorners) return;
+function sortCornersGeometrically(pts) {
+    if (pts.length !== 4) return pts;
+    // Tri géométrique robuste : 0=Haut-Gauche (A8), 1=Haut-Droite (H8), 2=Bas-Droite (H1), 3=Bas-Gauche (A1)
+    const sums = pts.map(p => p[0] + p[1]);
+    const diffs = pts.map(p => p[0] - p[1]);
+
+    const tlIdx = sums.indexOf(Math.min(...sums));
+    const brIdx = sums.indexOf(Math.max(...sums));
+    const trIdx = diffs.indexOf(Math.max(...diffs));
+    const blIdx = diffs.indexOf(Math.min(...diffs));
+
+    return [pts[tlIdx], pts[trIdx], pts[brIdx], pts[blIdx]];
+}
+
+function drawOverlay() {
     const canvas = document.getElementById('interactive-canvas');
+    if (!canvas) return;
     const ctx = canvas.getContext('2d');
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    const w = canvas.width;
-    const h = canvas.height;
-    if (w === 0 || h === 0) return;
+    const info = getImageRenderInfo();
+    if (!info) return;
 
-    const labels = ["A8 (Haut-G)", "H8 (Haut-D)", "H1 (Bas-D)", "A1 (Bas-G)"];
-    const colors = ["#f97316", "#38bdf8", "#22c55e", "#a855f7"];
+    // 1. Rendu pendant le mode 4 Clics
+    if (guide4PointsMode) {
+        clickedPointsNorm.forEach((pt, idx) => {
+            const cx = info.offsetX + pt[0] * info.renderedW;
+            const cy = info.offsetY + pt[1] * info.renderedH;
 
-    // Lignes quadrilatère
-    ctx.strokeStyle = "rgba(56, 189, 248, 0.8)";
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    currentCornersNorm.forEach((p, i) => {
-        const x = p[0] * w;
-        const y = p[1] * h;
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-    });
-    ctx.closePath();
-    ctx.stroke();
+            // Halo pulsé
+            ctx.beginPath();
+            ctx.arc(cx, cy, 16, 0, Math.PI * 2);
+            ctx.fillStyle = "rgba(245, 158, 11, 0.4)";
+            ctx.fill();
 
-    // Poignées
-    currentCornersNorm.forEach((p, i) => {
-        const x = p[0] * w;
-        const y = p[1] * h;
+            // Point central
+            ctx.beginPath();
+            ctx.arc(cx, cy, 7, 0, Math.PI * 2);
+            ctx.fillStyle = "#fbbf24";
+            ctx.fill();
+            ctx.strokeStyle = "#fff";
+            ctx.lineWidth = 2;
+            ctx.stroke();
 
-        ctx.fillStyle = colors[i];
-        ctx.beginPath();
-        ctx.arc(x, y, 9, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.strokeStyle = "#fff";
+            // Label
+            ctx.fillStyle = "#fff";
+            ctx.font = "bold 12px sans-serif";
+            ctx.fillText(`Coin ${idx + 1}`, cx + 12, cy - 8);
+        });
+
+        // Lignes reliant les points cliqués
+        if (clickedPointsNorm.length > 1) {
+            ctx.beginPath();
+            ctx.strokeStyle = "rgba(251, 191, 36, 0.85)";
+            ctx.lineWidth = 2;
+            ctx.setLineDash([4, 4]);
+            clickedPointsNorm.forEach((pt, i) => {
+                const px = info.offsetX + pt[0] * info.renderedW;
+                const py = info.offsetY + pt[1] * info.renderedH;
+                if (i === 0) ctx.moveTo(px, py);
+                else ctx.lineTo(px, py);
+            });
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
+
+        // Réticule de visée sous la souris
+        if (lastMousePos && lastMousePos.inside) {
+            ctx.strokeStyle = "rgba(56, 189, 248, 0.9)";
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.arc(lastMousePos.x, lastMousePos.y, 16, 0, Math.PI * 2);
+            ctx.moveTo(lastMousePos.x - 24, lastMousePos.y);
+            ctx.lineTo(lastMousePos.x + 24, lastMousePos.y);
+            ctx.moveTo(lastMousePos.x, lastMousePos.y - 24);
+            ctx.lineTo(lastMousePos.x, lastMousePos.y + 24);
+            ctx.stroke();
+        }
+        return;
+    }
+
+    // 2. Rendu en mode Édition manuelle drag & drop
+    if (editingCorners) {
+        const labels = ["A8 (Haut-G)", "H8 (Haut-D)", "H1 (Bas-D)", "A1 (Bas-G)"];
+        const colors = ["#f97316", "#38bdf8", "#22c55e", "#a855f7"];
+
+        ctx.strokeStyle = "rgba(56, 189, 248, 0.85)";
         ctx.lineWidth = 2;
+        ctx.beginPath();
+        currentCornersNorm.forEach((p, i) => {
+            const x = info.offsetX + p[0] * info.renderedW;
+            const y = info.offsetY + p[1] * info.renderedH;
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+        });
+        ctx.closePath();
         ctx.stroke();
 
-        ctx.fillStyle = "#fff";
-        ctx.font = "11px sans-serif";
-        ctx.fillText(labels[i], x + 12, y + 4);
-    });
+        currentCornersNorm.forEach((p, i) => {
+            const x = info.offsetX + p[0] * info.renderedW;
+            const y = info.offsetY + p[1] * info.renderedH;
+
+            ctx.fillStyle = colors[i];
+            ctx.beginPath();
+            ctx.arc(x, y, 9, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = "#fff";
+            ctx.lineWidth = 2;
+            ctx.stroke();
+
+            ctx.fillStyle = "#fff";
+            ctx.font = "bold 11px sans-serif";
+            ctx.fillText(labels[i], x + 12, y + 4);
+        });
+    }
+}
+
+function toggleEditCorners() {
+    editingCorners = !editingCorners;
+    const btn = document.getElementById('btn-edit-corners');
+    const canvas = document.getElementById('interactive-canvas');
+
+    if (editingCorners) {
+        guide4PointsMode = false;
+        btn.classList.add('active');
+        btn.innerText = '💾 Sauvegarder Coins';
+        canvas.classList.add('interactive');
+        resizeCanvas();
+        drawOverlay();
+    } else {
+        btn.classList.remove('active');
+        btn.innerText = '📐 Ajuster (Manuel)';
+        canvas.classList.remove('interactive');
+        postJSON('/api/vision/corners', { corners: currentCornersNorm });
+        clearCanvas();
+    }
 }
 
 function setupCanvasInteraction() {
     const canvas = document.getElementById('interactive-canvas');
 
+    canvas.addEventListener('mousemove', (e) => {
+        const rect = canvas.getBoundingClientRect();
+        const mx = e.clientX - rect.left;
+        const my = e.clientY - rect.top;
+        const info = getImageRenderInfo();
+
+        if (info) {
+            const inside = (mx >= info.offsetX && mx <= info.offsetX + info.renderedW &&
+                            my >= info.offsetY && my <= info.offsetY + info.renderedH);
+            lastMousePos = { x: mx, y: my, inside };
+        }
+
+        if (guide4PointsMode) {
+            drawOverlay();
+            return;
+        }
+
+        if (editingCorners && activeDragCorner !== null && info) {
+            const imgX = Math.max(0, Math.min(mx - info.offsetX, info.renderedW));
+            const imgY = Math.max(0, Math.min(my - info.offsetY, info.renderedH));
+
+            currentCornersNorm[activeDragCorner] = [
+                Math.round((imgX / info.renderedW) * 1000) / 1000,
+                Math.round((imgY / info.renderedH) * 1000) / 1000
+            ];
+            drawOverlay();
+        }
+    });
+
     canvas.addEventListener('click', (e) => {
         if (!guide4PointsMode) return;
+        const info = getImageRenderInfo();
+        if (!info) return;
+
         const rect = canvas.getBoundingClientRect();
         const mx = e.clientX - rect.left;
         const my = e.clientY - rect.top;
 
-        const normX = Math.round((mx / canvas.width) * 1000) / 1000;
-        const normY = Math.round((my / canvas.height) * 1000) / 1000;
+        if (mx < info.offsetX || mx > info.offsetX + info.renderedW ||
+            my < info.offsetY || my > info.offsetY + info.renderedH) {
+            return;
+        }
 
-        currentCornersNorm[guide4PointsStep] = [normX, normY];
-        guide4PointsStep++;
+        const normX = Math.round(((mx - info.offsetX) / info.renderedW) * 1000) / 1000;
+        const normY = Math.round(((my - info.offsetY) / info.renderedH) * 1000) / 1000;
 
+        clickedPointsNorm.push([normX, normY]);
+        const count = clickedPointsNorm.length;
         const banner = document.getElementById('banner-action');
-        if (guide4PointsStep < 4) {
-            banner.innerText = `🎯 Mode 4 Clics : [Étape ${guide4PointsStep + 1}/4] ${GUIDE_STEP_LABELS[guide4PointsStep]}`;
+
+        if (count < 4) {
+            banner.innerText = `🎯 Coin ${count} enregistré ! Cliquez sur le prochain coin (${count}/4)`;
+            drawOverlay();
         } else {
+            // Tri géométrique automatique (fonctionne quel que soit l'ordre des clics !)
+            const ordered = sortCornersGeometrically(clickedPointsNorm);
+            currentCornersNorm = ordered;
             guide4PointsMode = false;
             canvas.classList.remove('interactive');
             document.getElementById('btn-guide-4pts').classList.remove('active');
-            banner.innerText = `✅ 4 coins calibrés avec succès ! Calibration sauvegardée.`;
-            postJSON('/api/vision/corners', { corners: currentCornersNorm });
+            banner.innerText = `✅ 4 coins enregistrés et ordonnés ! Cadrillage AR actualisé.`;
+            drawOverlay();
+
+            postJSON('/api/vision/corners', { corners: currentCornersNorm }).then(() => {
+                setTimeout(clearCanvas, 1500);
+            });
         }
-        drawCornersOverlay();
     });
 
     canvas.addEventListener('mousedown', (e) => {
         if (!editingCorners || guide4PointsMode) return;
+        const info = getImageRenderInfo();
+        if (!info) return;
+
         const rect = canvas.getBoundingClientRect();
         const mx = e.clientX - rect.left;
         const my = e.clientY - rect.top;
-        const w = canvas.width;
-        const h = canvas.height;
 
         activeDragCorner = null;
         currentCornersNorm.forEach((p, i) => {
-            const px = p[0] * w;
-            const py = p[1] * h;
-            if (Math.hypot(mx - px, my - py) < 18) {
+            const px = info.offsetX + p[0] * info.renderedW;
+            const py = info.offsetY + p[1] * info.renderedH;
+            if (Math.hypot(mx - px, my - py) < 20) {
                 activeDragCorner = i;
             }
         });
-    });
-
-    canvas.addEventListener('mousemove', (e) => {
-        if (!editingCorners || activeDragCorner === null) return;
-        const rect = canvas.getBoundingClientRect();
-        const mx = Math.max(0, Math.min(e.clientX - rect.left, canvas.width));
-        const my = Math.max(0, Math.min(e.clientY - rect.top, canvas.height));
-
-        currentCornersNorm[activeDragCorner] = [
-            Math.round((mx / canvas.width) * 1000) / 1000,
-            Math.round((my / canvas.height) * 1000) / 1000
-        ];
-        drawCornersOverlay();
     });
 
     window.addEventListener('mouseup', () => {
