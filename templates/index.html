@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chess AR Vision — Salon & Bras Robot</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <header>
+        <div class="header-container">
+            <div class="title-group">
+                <h1>♟️ Chess AR Vision</h1>
+                <div class="subtitle">Réalité Augmentée dans votre salon • 100% CPU • Prêt pour SO-101</div>
+            </div>
+            <div class="status-group">
+                <span id="cam-status-badge" class="badge badge-offline">Caméra Inactive</span>
+            </div>
+        </div>
+    </header>
+
+    <main class="main-layout">
+        <!-- Colonne Gauche : Flux Caméra AR & Calibration -->
+        <section class="left-col">
+            <div class="card">
+                <div class="card-header">
+                    <h2>📷 Vue Caméra Salon & Réalité Augmentée</h2>
+                    <span id="fps-counter" style="font-size: 0.75rem; color: #94a3b8;">0 FPS</span>
+                </div>
+                
+                <div class="toolbar">
+                    <select id="camera-select" class="select-input">
+                        <option value="0">Caméra 0</option>
+                    </select>
+                    <button id="btn-detect-cam" class="btn">↻ Détecter</button>
+                    <button id="btn-toggle-cam" class="btn btn-primary">▶ Activer Caméra</button>
+                    <button id="btn-rotate-cam" class="btn">🔄 180°</button>
+                    <button id="btn-flip-cam" class="btn">↔ Miroir</button>
+                    <button id="btn-snapshot" class="btn">📸 Snapshot</button>
+                </div>
+
+                <div class="toolbar">
+                    <span style="font-size: 0.8rem; font-weight: 600; color: #38bdf8;">Calibration :</span>
+                    <button id="btn-auto-calib" class="btn btn-success">✨ Détection Auto</button>
+                    <button id="btn-edit-corners" class="btn">📐 Ajuster 4 Coins (Manuel)</button>
+                    <button id="btn-rotate-board" class="btn">🔄 Pivoter Blancs 90°</button>
+                    <button id="btn-toggle-grid" class="btn active"># Grille AR</button>
+                    <button id="btn-toggle-labels" class="btn active">🔤 Labels a-h</button>
+                </div>
+
+                <div class="viewport-container" id="viewport-box">
+                    <div id="cam-placeholder" class="placeholder">
+                        <p style="font-size: 2rem;">📷</p>
+                        <p>Webcam inactive. Cliquez sur « ▶ Activer Caméra ».</p>
+                    </div>
+                    <img id="cam-stream" class="video-stream" src="" alt="Flux Webcam AR" style="display: none;">
+                    <canvas id="interactive-canvas" class="canvas-overlay"></canvas>
+                </div>
+
+                <div id="banner-action" class="status-banner">
+                    ℹ️ Connectez votre caméra et placez votre échiquier sous l'objectif.
+                </div>
+            </div>
+        </section>
+
+        <!-- Colonne Droite : Échiquier 2D, Miniature 512x512, Réglages Bot & Robot -->
+        <section class="right-col">
+            <!-- Miniature Redressée 512x512 -->
+            <div class="card">
+                <div class="card-header">
+                    <h2>🔍 Vue Plateau Redressée (Perspective Transform 512×512)</h2>
+                </div>
+                <div class="warped-container">
+                    <img id="warped-stream" class="warped-stream" src="" alt="Vue Redressée" style="display: none;">
+                    <div id="warped-placeholder" style="color: #64748b; font-size: 0.8rem; padding: 20px;">
+                        Miniature active avec la caméra
+                    </div>
+                </div>
+            </div>
+
+            <!-- Échiquier Numérique 2D & Contrôles Partie -->
+            <div class="card">
+                <div class="card-header">
+                    <h2>♟️ État de la Partie & Commandes</h2>
+                    <span id="turn-badge" class="badge badge-offline">En attente</span>
+                </div>
+
+                <div class="digital-board-wrapper">
+                    <div id="digital-chess-board" class="chess-board-grid"></div>
+                </div>
+
+                <div class="game-controls">
+                    <button id="btn-new-game" class="btn btn-primary">🆕 Nouvelle Partie</button>
+                    <button id="btn-confirm-setup" class="btn btn-success">✅ Valider Pièces Initiales</button>
+                    <button id="btn-resync" class="btn">📸 Resync (J'adoube)</button>
+                    <button id="btn-undo" class="btn">↩️ Annuler</button>
+                    <button id="btn-hint" class="btn" style="border-color: #38bdf8;">💡 Indice AR</button>
+                </div>
+
+                <!-- Réglages Moteur & Niveau Bot -->
+                <div class="settings-panel">
+                    <div class="setting-row">
+                        <label for="select-game-mode">Mode de jeu :</label>
+                        <select id="select-game-mode" class="select-input">
+                            <option value="HUMAN_VS_BOT">👤 Humain vs 🤖 Bot</option>
+                            <option value="HUMAN_VS_HUMAN">👥 Humain vs 👤 Humain (Analyse)</option>
+                        </select>
+                    </div>
+                    <div class="setting-row">
+                        <label for="select-bot-elo">Niveau du Bot (ELO) :</label>
+                        <select id="select-bot-elo" class="select-input">
+                            <option value="800">Débutant (800 ELO)</option>
+                            <option value="1200" selected>Intermédiaire (1200 ELO)</option>
+                            <option value="1500">Club (1500 ELO)</option>
+                            <option value="1800">Avancé (1800 ELO)</option>
+                            <option value="2200">Expert (2200 ELO)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Outils Milieu de Partie & Robot SO-101 -->
+                <div class="settings-panel" style="background: #0f172a;">
+                    <div style="font-weight: 600; font-size: 0.8rem; margin-bottom: 6px; color: #a855f7;">
+                        🧠 IA Milieu de Partie & 🦾 Pont Robot SO-101 :
+                    </div>
+                    <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+                        <button id="btn-scan-ml" class="btn" title="Reconnaissance FEN instantanée 100% CPU">🔍 Scanner Position FEN</button>
+                        <button id="btn-capture-ml" class="btn" title="Enregistre les 64 cases dans le dataset d'entraînement">📸 Capturer Dataset</button>
+                        <button id="btn-plan-robot" class="btn" title="Simule la décomposition en mouvements physiques SO-101">🦾 Inspecter Séquence Robot</button>
+                    </div>
+                </div>
+
+                <div class="move-list" id="move-history-box">
+                    <em>Historique des coups PGN vide</em>
+                </div>
+            </div>
+        </section>
+
+        <!-- Terminal Logs -->
+        <div class="terminal-card" id="logs-box">
+            [Système] Prêt.
+        </div>
+    </main>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

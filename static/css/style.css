@@ -1,0 +1,265 @@
+:root {
+    --bg-color: #0b0f19;
+    --card-bg: #131b2e;
+    --card-header: #1a243d;
+    --border-color: #243254;
+    --text-primary: #e2e8f0;
+    --text-secondary: #94a3b8;
+    --accent-blue: #38bdf8;
+    --accent-green: #22c55e;
+    --accent-orange: #f97316;
+    --accent-red: #ef4444;
+}
+
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    background: var(--bg-color);
+    color: var(--text-primary);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    padding: 12px;
+}
+
+header {
+    margin-bottom: 12px;
+}
+
+.header-container {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: var(--card-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 10px 16px;
+}
+
+.title-group h1 {
+    font-size: 1.3rem;
+    font-weight: 700;
+}
+
+.subtitle {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+
+.badge {
+    padding: 4px 10px;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.badge-offline { background: #374151; color: #9ca3af; }
+.badge-online { background: #065f46; color: #34d399; }
+
+.main-layout {
+    display: grid;
+    grid-template-columns: 1.35fr 1fr;
+    gap: 12px;
+}
+
+.card {
+    background: var(--card-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    margin-bottom: 12px;
+    overflow: hidden;
+}
+
+.card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: var(--card-header);
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.card-header h2 {
+    font-size: 0.95rem;
+    font-weight: 600;
+}
+
+.toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 8px 12px;
+    background: #0f172a;
+    border-bottom: 1px solid var(--border-color);
+    align-items: center;
+}
+
+.select-input {
+    background: #1e293b;
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 0.8rem;
+}
+
+.btn {
+    background: #1e293b;
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 5px 10px;
+    font-size: 0.8rem;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.btn:hover { background: #334155; }
+.btn-primary { background: #0284c7; border-color: #38bdf8; color: #fff; }
+.btn-primary:hover { background: #0369a1; }
+.btn-success { background: #16a34a; border-color: #22c55e; color: #fff; }
+.btn-success:hover { background: #15803d; }
+.btn.active {
+    background: #0369a1;
+    border-color: var(--accent-blue);
+    box-shadow: 0 0 8px rgba(56, 189, 248, 0.4);
+}
+
+/* Vue Caméra & Overlay interactif */
+.viewport-container {
+    position: relative;
+    background: #000;
+    min-height: 420px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    overflow: hidden;
+}
+
+.video-stream {
+    width: 100%;
+    height: auto;
+    max-height: 520px;
+    display: block;
+    object-fit: contain;
+}
+
+.placeholder {
+    text-align: center;
+    color: var(--text-secondary);
+    padding: 40px;
+}
+
+.canvas-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 10;
+}
+
+.canvas-overlay.interactive {
+    pointer-events: auto;
+    cursor: crosshair;
+}
+
+.status-banner {
+    padding: 8px 14px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    background: #0f172a;
+    border-top: 1px solid var(--border-color);
+}
+
+.warped-container {
+    display: flex;
+    justify-content: center;
+    background: #000;
+    padding: 8px;
+}
+
+.warped-stream {
+    width: 320px;
+    height: 320px;
+    border: 1px solid var(--border-color);
+}
+
+/* Échiquier numérique 2D */
+.digital-board-wrapper {
+    display: flex;
+    justify-content: center;
+    padding: 10px;
+    background: #0f172a;
+}
+
+.chess-board-grid {
+    display: grid;
+    grid-template-columns: repeat(8, 38px);
+    grid-template-rows: repeat(8, 38px);
+    border: 2px solid #334155;
+}
+
+.chess-sq {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    font-size: 24px;
+    user-select: none;
+    cursor: pointer;
+}
+
+.chess-sq.light { background: #f0d9b5; color: #111; }
+.chess-sq.dark { background: #b58863; color: #111; }
+.chess-sq.highlight-from { background: #f6e05e !important; }
+.chess-sq.highlight-to { background: #68d391 !important; }
+.chess-sq.highlight-check { background: #fc8181 !important; }
+
+.game-controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 10px 14px;
+    background: #0f172a;
+    border-top: 1px solid var(--border-color);
+}
+
+.settings-panel {
+    padding: 10px 14px;
+    border-top: 1px solid var(--border-color);
+}
+
+.setting-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+}
+
+.move-list {
+    max-height: 100px;
+    overflow-y: auto;
+    font-family: monospace;
+    font-size: 0.8rem;
+    padding: 8px 12px;
+    background: #0b0f19;
+}
+
+.terminal-card {
+    grid-column: span 2;
+    background: #080c14;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-family: monospace;
+    font-size: 0.75rem;
+    color: #38bdf8;
+    max-height: 120px;
+    overflow-y: auto;
+}
