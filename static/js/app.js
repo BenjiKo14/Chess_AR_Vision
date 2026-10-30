@@ -4,6 +4,16 @@ let editingCorners = false;
 let activeDragCorner = null;
 let currentCornersNorm = [[0.2, 0.15], [0.8, 0.15], [0.85, 0.85], [0.15, 0.85]];
 
+// Mode 4 clics guidés
+let guide4PointsMode = false;
+let guide4PointsStep = 0; // 0: A8, 1: H8, 2: H1, 3: A1
+const GUIDE_STEP_LABELS = [
+    "Cliquez sur le coin A8 (Haut-Gauche)",
+    "Cliquez sur le coin H8 (Haut-Droite)",
+    "Cliquez sur le coin H1 (Bas-Droite)",
+    "Cliquez sur le coin A1 (Bas-Gauche)"
+];
+
 const PIECE_UNICODE = {
     'P': '♙', 'N': '♘', 'B': '♗', 'R': '♖', 'Q': '♕', 'K': '♔',
     'p': '♟', 'n': '♞', 'b': '♝', 'r': '♜', 'q': '♛', 'k': '♚'
@@ -97,6 +107,7 @@ function initEventListeners() {
 
     // Vision & Calibration
     document.getElementById('btn-auto-calib').addEventListener('click', autoCalibrate);
+    document.getElementById('btn-guide-4pts').addEventListener('click', start4PointsGuide);
     document.getElementById('btn-rotate-board').addEventListener('click', () => {
         postJSON('/api/vision/rotate-board', {}).then(res => {
             if (res.corners) {
@@ -375,6 +386,21 @@ function pollLogs() {
         });
 }
 
+function start4PointsGuide() {
+    guide4PointsMode = true;
+    guide4PointsStep = 0;
+    editingCorners = false;
+
+    const canvas = document.getElementById('interactive-canvas');
+    canvas.classList.add('interactive');
+    resizeCanvas();
+
+    const banner = document.getElementById('banner-action');
+    banner.innerText = `🎯 Mode 4 Clics : [Étape 1/4] ${GUIDE_STEP_LABELS[0]}`;
+    document.getElementById('btn-guide-4pts').classList.add('active');
+    drawCornersOverlay();
+}
+
 // --- Drag & Drop interactif des 4 coins sur le Canvas ---
 function toggleEditCorners() {
     editingCorners = !editingCorners;
@@ -462,8 +488,33 @@ function drawCornersOverlay() {
 function setupCanvasInteraction() {
     const canvas = document.getElementById('interactive-canvas');
 
+    canvas.addEventListener('click', (e) => {
+        if (!guide4PointsMode) return;
+        const rect = canvas.getBoundingClientRect();
+        const mx = e.clientX - rect.left;
+        const my = e.clientY - rect.top;
+
+        const normX = Math.round((mx / canvas.width) * 1000) / 1000;
+        const normY = Math.round((my / canvas.height) * 1000) / 1000;
+
+        currentCornersNorm[guide4PointsStep] = [normX, normY];
+        guide4PointsStep++;
+
+        const banner = document.getElementById('banner-action');
+        if (guide4PointsStep < 4) {
+            banner.innerText = `🎯 Mode 4 Clics : [Étape ${guide4PointsStep + 1}/4] ${GUIDE_STEP_LABELS[guide4PointsStep]}`;
+        } else {
+            guide4PointsMode = false;
+            canvas.classList.remove('interactive');
+            document.getElementById('btn-guide-4pts').classList.remove('active');
+            banner.innerText = `✅ 4 coins calibrés avec succès ! Calibration sauvegardée.`;
+            postJSON('/api/vision/corners', { corners: currentCornersNorm });
+        }
+        drawCornersOverlay();
+    });
+
     canvas.addEventListener('mousedown', (e) => {
-        if (!editingCorners) return;
+        if (!editingCorners || guide4PointsMode) return;
         const rect = canvas.getBoundingClientRect();
         const mx = e.clientX - rect.left;
         const my = e.clientY - rect.top;

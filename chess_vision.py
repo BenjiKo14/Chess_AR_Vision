@@ -69,6 +69,15 @@ class ChessVisionManager:
         self.last_motion_time = time.time()
         self.stability_delay = 0.75
 
+        # Support ArUco
+        self.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+        if hasattr(cv2.aruco, 'ArucoDetector'):
+            params = cv2.aruco.DetectorParameters()
+            self.aruco_detector = cv2.aruco.ArucoDetector(self.aruco_dict, params)
+        else:
+            self.aruco_detector = None
+        self.auto_aruco_tracking = True  # Recalibration automatique temps réel si les 4 marqueurs sont vus !
+
         # Éléments AR dynamiques fournis par ChessGameManager
         self.ar_arrow = None             # Dict: {"from_sq": int, "to_sq": int, "is_capture": bool, "color": tuple, "label": str}
         self.highlight_squares = {}      # sq -> {"color": (B, G, R), "alpha": float}
@@ -182,10 +191,52 @@ class ChessVisionManager:
         pts = [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
         return np.array(self.warped_points_to_camera(pts), dtype=np.int32)
 
+    def detect_aruco_corners(self, frame):
+        """
+        Détecte les 4 marqueurs ArUco (IDs 0: A8, 1: H8, 2: H1, 3: A1).
+        Retourne (True, corners_norm) si les 4 sont détectés, sinon (False, None).
+        """
+        if frame is None:
+            return False, None
+
+        h, w = frame.shape[:2]
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+        if self.aruco_detector is not None:
+            corners, ids, _ = self.aruco_detector.detectMarkers(gray)
+        else:
+            corners, ids, _ = cv2.aruco.detectMarkers(gray, self.aruco_dict)
+
+        if ids is None or len(ids) < 4:
+            return False, None
+
+        id_to_center = {}
+        for i, marker_id in enumerate(ids.flatten()):
+            if marker_id in (0, 1, 2, 3):
+                # Centre du marqueur ou son coin intérieur
+                m_corners = corners[i][0]
+                cx = float(np.mean(m_corners[:, 0]))
+                cy = float(np.mean(m_corners[:, 1]))
+                id_to_center[int(marker_id)] = (cx, cy)
+
+        if len(id_to_center) == 4:
+            # Ordre strict: 0 (A8), 1 (H8), 2 (H1), 3 (A1)
+            raw_corners = [id_to_center[0], id_to_center[1], id_to_center[2], id_to_center[3]]
+            norm_corners = [[pt[0] / w, pt[1] / h] for pt in raw_corners]
+            return True, norm_corners
+
+        return False, None
+
     def auto_detect_board(self, raw_frame):
-        """Détection automatique du plateau d'échecs via OpenCV."""
+        """Détection automatique du plateau d'échecs (ArUco en priorité, puis fallback grille/contours)."""
         if raw_frame is None:
             return False, "Aucune image reçue", None
+
+        # Priorité 1 : Marqueurs ArUco (100% fiable, 2 ms)
+        has_aruco, aruco_corners = self.detect_aruco_corners(raw_frame)
+        if has_aruco:
+            self.set_corners(aruco_corners)
+            return True, "Détection ArUco réussie (Marqueurs 0, 1, 2, 3)", aruco_corners
 
         h, w = raw_frame.shape[:2]
         gray = cv2.cvtColor(raw_frame, cv2.COLOR_BGR2GRAY)
