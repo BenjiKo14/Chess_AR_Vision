@@ -303,17 +303,29 @@ function toggleCamera() {
 
 function autoCalibrate() {
     const btn = document.getElementById('btn-auto-calib');
-    btn.innerText = '⏳ Analyse...';
+    const banner = document.getElementById('banner-action');
+    const originalText = '✨ Détection Auto (ArUco / Grille)';
+    
+    btn.disabled = true;
+    btn.innerText = '⏳ Analyse ArUco & Grille...';
+    banner.innerText = '⏳ Recherche des marqueurs ArUco aux 4 coins...';
+
     postJSON('/api/vision/auto-calibrate', {})
         .then(res => {
-            btn.innerText = '✨ Détection Auto';
+            btn.disabled = false;
+            btn.innerText = originalText;
             if (res.success && res.corners) {
                 currentCornersNorm = res.corners;
-                drawCornersOverlay();
-                alert(`✅ ${res.message}`);
+                drawOverlay();
+                banner.innerText = `✅ Succès : ${res.message}`;
             } else {
-                alert(`⚠️ ${res.message}`);
+                banner.innerText = `⚠️ ${res.message || "Aucun marqueur détecté"}. Vous pouvez aussi utiliser « 🎯 Pointer 4 Clics ».`;
             }
+        })
+        .catch(err => {
+            btn.disabled = false;
+            btn.innerText = originalText;
+            banner.innerText = `❌ Erreur de communication serveur : ${err}`;
         });
 }
 
