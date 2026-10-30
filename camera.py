@@ -5,6 +5,7 @@ import threading
 from datetime import datetime
 from pathlib import Path
 import cv2
+import numpy as np
 
 def safe_log_print(msg):
     """Affiche un message en console de façon sûre (évite UnicodeEncodeError sous Windows cp1252)."""
@@ -48,6 +49,67 @@ class CameraManager:
 
         # Hook processeur d'image (ex: ChessVisionManager.process_frame)
         self.frame_processor = None
+        self.is_static_image = False
+
+    def load_static_image(self, file_path_or_bytes):
+        """Charge une image fixe (photo) à la place du flux webcam."""
+        with self._lock:
+            if self.is_running and not self.is_static_image:
+                self._stop_unlocked()
+
+            if isinstance(file_path_or_bytes, (str, Path)):
+                img = cv2.imread(str(file_path_or_bytes))
+            else:
+                nparr = np.frombuffer(file_path_or_bytes, np.uint8)
+                img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+            if img is None:
+                return False, "Impossible de charger l'image"
+
+            h, w = img.shape[:2]
+            self.width = w
+            self.height = h
+            self.camera_index = "photo"
+            self.is_running = True
+            self.is_static_image = True
+            self._latest_raw_frame = img.copy()
+
+            # Lancer une boucle légère pour continuer à servir le flux et l'AR interactive
+            self._stop_event.clear()
+            self._thread = threading.Thread(target=self._static_loop, daemon=True)
+            self._thread.start()
+            self.log(f"[OK] Photo chargee comme source video ({w}x{h})")
+            return True, None
+
+    def _static_loop(self):
+        """Sert l'image fixe en continu pour permettre l'interaction AR sans webcam."""
+        while not self._stop_event.is_set():
+            with self._lock:
+                if self._latest_raw_frame is None:
+                    break
+                frame = self._latest_raw_frame.copy()
+
+            if self.rotate_180:
+                frame = cv2.rotate(frame, cv2.ROTATE_180)
+            if self.flip_h:
+                frame = cv2.flip(frame, 1)
+
+            display_frame = frame.copy()
+            if self.frame_processor:
+                try:
+                    display_frame = self.frame_processor(display_frame)
+                except Exception as e:
+                    pass
+
+            ok, buf = cv2.imencode('.jpg', display_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            if ok:
+                with self._lock:
+                    self._latest_display_jpeg = buf.tobytes()
+
+            time.sleep(0.04)
+
+        with self._lock:
+            self._stop_unlocked()
 
     def log(self, msg):
         try:
@@ -209,6 +271,7 @@ class CameraManager:
         self.camera_index = None
         self._latest_display_jpeg = None
         self.fps = 0.0
+        self.is_static_image = False
 
     def stop(self):
         with self._lock:

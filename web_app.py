@@ -128,6 +128,20 @@ def camera_snapshot():
         return jsonify({'success': True, 'filename': filename, 'url': f'/snapshots/{filename}'})
     return jsonify({'success': False, 'error': filename}), 400
 
+@app.route('/api/camera/upload-photo', methods=['POST'])
+def camera_upload_photo():
+    if 'photo' not in request.files:
+        return jsonify({'success': False, 'error': 'Aucun fichier photo fourni'}), 400
+    file = request.files['photo']
+    if file.filename == '':
+        return jsonify({'success': False, 'error': 'Nom de fichier vide'}), 400
+
+    file_bytes = file.read()
+    ok, err = camera_mgr.load_static_image(file_bytes)
+    if ok:
+        return jsonify({'success': True, 'status': camera_mgr.get_status()})
+    return jsonify({'success': False, 'error': err}), 400
+
 @app.route('/snapshots/<path:filename>')
 def serve_snapshot(filename):
     return send_from_directory('snapshots', filename)

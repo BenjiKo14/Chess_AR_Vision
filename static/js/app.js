@@ -84,6 +84,7 @@ function initEventListeners() {
     // Caméra
     document.getElementById('btn-detect-cam').addEventListener('click', detectCameras);
     document.getElementById('btn-toggle-cam').addEventListener('click', toggleCamera);
+    document.getElementById('input-upload-photo').addEventListener('change', uploadPhoto);
     document.getElementById('btn-rotate-cam').addEventListener('click', () => {
         postJSON('/api/camera/settings', { rotate_180: true });
     });
@@ -195,6 +196,52 @@ function detectCameras() {
                 sel.innerHTML = '<option value="0">Caméra 0 (Par défaut)</option>';
             }
         });
+}
+
+function uploadPhoto(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    const formData = new FormData();
+    formData.append('photo', file);
+
+    const banner = document.getElementById('banner-action');
+    banner.innerText = "⏳ Chargement de la photo...";
+
+    fetch('/api/camera/upload-photo', {
+        method: 'POST',
+        body: formData
+    })
+    .then(r => r.json())
+    .then(res => {
+        if (res.success) {
+            cameraConnected = true;
+            const btn = document.getElementById('btn-toggle-cam');
+            const imgStream = document.getElementById('cam-stream');
+            const warpedStream = document.getElementById('warped-stream');
+            const placeholder = document.getElementById('cam-placeholder');
+            const warpedPlaceholder = document.getElementById('warped-placeholder');
+            const badge = document.getElementById('cam-status-badge');
+
+            btn.innerText = '⏹ Fermer Photo';
+            btn.className = 'btn btn-secondary';
+            badge.innerText = 'Photo Active';
+            badge.className = 'badge badge-online';
+
+            imgStream.src = `/api/camera/stream?t=${Date.now()}`;
+            imgStream.style.display = 'block';
+            placeholder.style.display = 'none';
+
+            warpedStream.src = `/api/vision/warped_stream?t=${Date.now()}`;
+            warpedStream.style.display = 'block';
+            warpedPlaceholder.style.display = 'none';
+
+            banner.innerText = `🖼️ Photo chargée (${file.name}). Vous pouvez maintenant ajuster les coins ou scanner la position !`;
+            setTimeout(resizeCanvas, 500);
+        } else {
+            alert('Erreur chargement photo: ' + res.error);
+        }
+    });
 }
 
 function toggleCamera() {
