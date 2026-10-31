@@ -838,22 +838,23 @@ function updateCheckAlertBanner(g) {
     if (!banner || !icon || !title || !subtitle) return;
 
     if (g.is_checkmate) {
-        banner.style.display = 'block';
-        banner.className = 'check-banner banner-mat';
+        banner.style.display = 'flex';
+        banner.className = 'check-banner banner-mat is-active';
         icon.innerText = '👑';
         const winnerName = g.winner === 'white' ? 'BLANCS' : (g.winner === 'black' ? 'NOIRS' : 'NULLE');
         const loserName = g.winner === 'white' ? 'Noirs' : 'Blancs';
         title.innerText = `ÉCHEC ET MAT ! LES ${winnerName} GAGNENT ! 🏆`;
-        subtitle.innerText = `Le Roi des ${loserName} est mat. Fin de la partie physique & numérique.`;
+        subtitle.innerText = `Le Roi des ${loserName} est mat. Fin de partie.`;
     } else if (g.is_check) {
-        banner.style.display = 'block';
-        banner.className = 'check-banner banner-check';
+        banner.style.display = 'flex';
+        banner.className = 'check-banner banner-check is-active';
         icon.innerText = '⚠️';
         const kingColor = g.turn === 'white' ? 'Blancs' : 'Noirs';
         title.innerText = `ÉCHEC AU ROI (${kingColor.toUpperCase()}) !`;
         subtitle.innerText = `Le Roi des ${kingColor} est attaqué ! Vous devez parer l'échec.`;
     } else {
-        banner.style.display = 'none';
+        banner.style.display = 'flex';
+        banner.className = 'check-banner';
     }
 }
 

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Chess AR Vision — Salon & Bras Robot</title>
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/style.css?v=3">
 </head>
 <body>
     <header>
@@ -285,17 +285,6 @@
                     </svg>
                 </div>
 
-                <!-- Bannière d'Alerte Échec / Échec et Mat & Victoire -->
-                <div id="check-alert-banner" class="check-banner" style="display: none;">
-                    <div class="banner-content">
-                        <span id="check-banner-icon" class="banner-icon">⚠️</span>
-                        <div class="banner-text-group">
-                            <span id="check-banner-title" class="banner-title">Échec au Roi !</span>
-                            <span id="check-banner-subtitle" class="banner-subtitle">Les Blancs sont en échec</span>
-                        </div>
-                    </div>
-                </div>
-
                 <!-- Barre de Navigation dans l'Historique (façon Chess.com) -->
                 <div class="history-nav-bar">
                     <div class="hist-btn-group">
@@ -306,6 +295,19 @@
                     </div>
                     <div id="hist-status-text" class="hist-status">
                         <span class="live-dot"></span> <span id="hist-status-label">En Direct</span>
+                    </div>
+                </div>
+
+                <!-- Bannière d'Alerte Échec / Échec et Mat (Slot réservé stable sans saut de page) -->
+                <div class="check-banner-slot">
+                    <div id="check-alert-banner" class="check-banner">
+                        <div class="banner-content">
+                            <span id="check-banner-icon" class="banner-icon">⚠️</span>
+                            <div class="banner-text-group">
+                                <span id="check-banner-title" class="banner-title">Échec au Roi !</span>
+                                <span id="check-banner-subtitle" class="banner-subtitle">Les Blancs sont en échec</span>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
@@ -398,7 +400,7 @@
         </div>
     </main>
 
-    <script src="/static/js/app.js"></script>
+    <script src="/static/js/app.js?v=3"></script>
     <script src="/static/js/position_editor.js"></script>
 
     <!-- Modale Gestionnaire de Parties Sauvegardées & Archives -->

@@ -1,20 +1,20 @@
 {
   "corners": [
     [
-      0.3405735492706299,
-      0.14679139852523804
+      0.3334365785121918,
+      0.14507265388965607
     ],
     [
-      0.9013782739639282,
-      0.15462106466293335
+      0.9108182191848755,
+      0.14823077619075775
     ],
     [
-      0.8561755418777466,
-      0.848800003528595
+      0.8633672595024109,
+      0.8580690622329712
     ],
     [
-      0.36362022161483765,
-      0.8166201710700989
+      0.3572987914085388,
+      0.8271380066871643
     ]
   ],
   "is_calibrated": true,
@@ -41,11 +41,11 @@
     "show_ar_labels": false,
     "show_ar_arrow": true,
     "show_ar_vision_debug": false,
-    "show_ar_pieces": false,
+    "show_ar_pieces": true,
     "show_warped_grid": true,
     "show_warped_arrow": true,
     "show_aruco_debug": true
   },
   "continuous_detection": true,
-  "updated_at": 1793466946.845644
+  "updated_at": 1793485721.079107
 }
