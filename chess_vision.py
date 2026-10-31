@@ -65,6 +65,11 @@ class ChessVisionManager:
         self.show_aruco_debug = True  # Affiche les carrés ArUco détectés avec leur contour vert et leur ID
         self.last_detected_markers = {}  # Stocke id -> np.array (4x2)
         self.last_aruco_centers_norm = None  # Stocke les 4 centres bruts des marqueurs pour ajuster l'inset en direct
+        # Lignes directrices exactes détectées par Hough (9 lignes horizontales et 9 lignes verticales dans 512x512)
+        self.hough_grid_lines = {
+            'rows': [float(i * SQUARE_SIZE) for i in range(9)],
+            'cols': [float(j * SQUARE_SIZE) for j in range(9)]
+        }
 
         # Console de configuration des paramètres de détection (réglables depuis l'UI Web)
         self.detection_config = {
@@ -207,7 +212,20 @@ class ChessVisionManager:
         return [(float(pt[0][0]), float(pt[0][1])) for pt in transformed]
 
     def square_to_warped_rect(self, col, row):
-        """Retourne (x1, y1, x2, y2) dans l'image 512x512 pour col in 0..7 (a..h) et row in 0..7 (8..1)."""
+        """
+        Retourne (x1, y1, x2, y2) dans l'image 512x512 pour col in 0..7 (a..h) et row in 0..7 (8..1).
+        Utilise les lignes exactes de la transformée de Hough si disponibles, acceptant une marge
+        naturelle de quelques pixels sur chaque case.
+        """
+        if hasattr(self, 'hough_grid_lines') and self.hough_grid_lines:
+            cols = self.hough_grid_lines.get('cols', [i * SQUARE_SIZE for i in range(9)])
+            rows = self.hough_grid_lines.get('rows', [i * SQUARE_SIZE for i in range(9)])
+            x1 = int(round(cols[col]))
+            y1 = int(round(rows[row]))
+            x2 = int(round(cols[col + 1]))
+            y2 = int(round(rows[row + 1]))
+            return x1, y1, x2, y2
+
         x1 = col * SQUARE_SIZE
         y1 = row * SQUARE_SIZE
         x2 = x1 + SQUARE_SIZE
@@ -291,6 +309,12 @@ class ChessVisionManager:
             w_tr = [refined_cols[8], refined_rows[0]]
             w_br = [refined_cols[8], refined_rows[8]]
             w_bl = [refined_cols[0], refined_rows[8]]
+
+            # Sauvegarde des 9 lignes exactes pour que chaque case du quadrillage soit calée au millimètre
+            self.hough_grid_lines = {
+                'rows': [refined_rows[i] for i in range(9)],
+                'cols': [refined_cols[j] for j in range(9)]
+            }
 
             warped_corners = np.float32([w_tl, w_tr, w_br, w_bl]).reshape(-1, 1, 2)
             refined_cam = cv2.perspectiveTransform(warped_corners, H_inv).reshape(4, 2)
@@ -594,19 +618,28 @@ class ChessVisionManager:
             return display_frame
 
     def _draw_warped_grid_overlay(self, img):
-        for i in range(9):
-            pos = i * SQUARE_SIZE
-            cv2.line(img, (pos, 0), (pos, WARP_SIZE), (0, 255, 120), 1, cv2.LINE_AA)
-            cv2.line(img, (0, pos), (WARP_SIZE, pos), (0, 255, 120), 1, cv2.LINE_AA)
+        # Utiliser les lignes détectées par Hough si disponibles (tolérance de quelques pixels)
+        rows = self.hough_grid_lines.get('rows', [i * SQUARE_SIZE for i in range(9)]) if hasattr(self, 'hough_grid_lines') and self.hough_grid_lines else [i * SQUARE_SIZE for i in range(9)]
+        cols = self.hough_grid_lines.get('cols', [i * SQUARE_SIZE for i in range(9)]) if hasattr(self, 'hough_grid_lines') and self.hough_grid_lines else [i * SQUARE_SIZE for i in range(9)]
+
+        x_min, x_max = int(cols[0]), int(cols[-1])
+        y_min, y_max = int(rows[0]), int(rows[-1])
+
+        for y in rows:
+            cv2.line(img, (x_min, int(y)), (x_max, int(y)), (0, 255, 120), 1, cv2.LINE_AA)
+        for x in cols:
+            cv2.line(img, (int(x), y_min), (int(x), y_max), (0, 255, 120), 1, cv2.LINE_AA)
 
         # Afficher étiquettes colonnes / rangées sur les bords
         for c in range(8):
             label = chr(ord('a') + c)
-            cv2.putText(img, label, (c * SQUARE_SIZE + 24, WARP_SIZE - 6),
+            cx = int((cols[c] + cols[c + 1]) / 2.0) - 4
+            cv2.putText(img, label, (cx, y_max - 6),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1, cv2.LINE_AA)
         for r in range(8):
             label = str(8 - r)
-            cv2.putText(img, label, (6, r * SQUARE_SIZE + 20),
+            cy = int((rows[r] + rows[r + 1]) / 2.0) + 4
+            cv2.putText(img, label, (x_min + 6, cy),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1, cv2.LINE_AA)
 
     def _draw_ar_elements(self, display_frame, w, h):
@@ -651,12 +684,19 @@ class ChessVisionManager:
 
         # D. Grille AR et contour perspective
         if self.show_ar_grid:
-            # Lignes horizontales et verticales
-            for i in range(1, 8):
-                pos = i * SQUARE_SIZE
-                p_h = self.warped_points_to_camera([(0, pos), (WARP_SIZE, pos)])
+            rows = self.hough_grid_lines.get('rows', [i * SQUARE_SIZE for i in range(9)]) if hasattr(self, 'hough_grid_lines') and self.hough_grid_lines else [i * SQUARE_SIZE for i in range(9)]
+            cols = self.hough_grid_lines.get('cols', [i * SQUARE_SIZE for i in range(9)]) if hasattr(self, 'hough_grid_lines') and self.hough_grid_lines else [i * SQUARE_SIZE for i in range(9)]
+            x_min, x_max = cols[0], cols[-1]
+            y_min, y_max = rows[0], rows[-1]
+
+            # Lignes horizontales exactes détectées par Hough
+            for y in rows[1:8]:
+                p_h = self.warped_points_to_camera([(x_min, y), (x_max, y)])
                 cv2.line(display_frame, (int(p_h[0][0]), int(p_h[0][1])), (int(p_h[1][0]), int(p_h[1][1])), (0, 220, 130), 1, cv2.LINE_AA)
-                p_v = self.warped_points_to_camera([(pos, 0), (pos, WARP_SIZE)])
+
+            # Lignes verticales exactes détectées par Hough
+            for x in cols[1:8]:
+                p_v = self.warped_points_to_camera([(x, y_min), (x, y_max)])
                 cv2.line(display_frame, (int(p_v[0][0]), int(p_v[0][1])), (int(p_v[1][0]), int(p_v[1][1])), (0, 220, 130), 1, cv2.LINE_AA)
 
             # Cadre extérieur avec couleur d'orientation (Vert = Blancs / Rangée 1)
