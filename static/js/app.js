@@ -160,7 +160,9 @@ function initEventListeners() {
             this.classList.toggle('active');
             const panel = document.getElementById('detection-console-panel');
             if (panel) {
-                panel.style.display = this.classList.contains('active') ? 'block' : 'none';
+                const isOpen = this.classList.contains('active');
+                panel.style.display = isOpen ? 'block' : 'none';
+                this.innerText = isOpen ? '🎛️ Masquer Config ▴' : '🎛️ Console Config ▾';
             }
         });
     }
