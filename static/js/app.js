@@ -1,3 +1,5 @@
+// État global frontend
+let cameraConnected = false;
 let show2DArrow = true;
 let currentLastMoveUci = null;
 let currentPendingBotMove = null;
@@ -178,7 +180,7 @@ function initEventListeners() {
         postJSON('/api/vision/rotate-board', {}).then(res => {
             if (res.corners) {
                 currentCornersNorm = res.corners;
-                drawCornersOverlay();
+                drawOverlay();
             }
         });
     });
@@ -562,7 +564,7 @@ function fetchVisionStatus() {
         .then(data => {
             if (data.corners_norm && !editingCorners && !guide4PointsMode) {
                 currentCornersNorm = data.corners_norm;
-                drawCornersOverlay();
+                drawOverlay();
             }
             if (data.detected_aruco_ids) {
                 updateArucoBadge(data.detected_aruco_ids);
