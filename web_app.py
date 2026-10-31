@@ -201,8 +201,12 @@ def vision_overlay_settings():
         vision_mgr.show_ar_grid = bool(data['show_ar_grid'])
     if 'show_ar_labels' in data:
         vision_mgr.show_ar_labels = bool(data['show_ar_labels'])
+    if 'show_ar_arrow' in data:
+        vision_mgr.show_ar_arrow = bool(data['show_ar_arrow'])
     if 'show_warped_grid' in data:
         vision_mgr.show_warped_grid = bool(data['show_warped_grid'])
+    if 'show_warped_arrow' in data:
+        vision_mgr.show_warped_arrow = bool(data['show_warped_arrow'])
     if 'show_aruco_debug' in data:
         vision_mgr.show_aruco_debug = bool(data['show_aruco_debug'])
     return jsonify({'success': True, 'status': vision_mgr.get_status()})

@@ -63,6 +63,7 @@
                     <button id="btn-toggle-aruco" class="btn active" style="color: #4ade80;">🟩 Voir ArUco</button>
                     <button id="btn-toggle-grid" class="btn active"># Grille AR</button>
                     <button id="btn-toggle-labels" class="btn active">🔤 Labels a-h</button>
+                    <button id="btn-toggle-ar-arrow" class="btn active" style="border-color: #38bdf8; color: #38bdf8;">↗ Flèche AR</button>
                     <button id="btn-toggle-console" class="btn" style="border-color: #a855f7; color: #d8b4fe;">🎛️ Console Config ▾</button>
                 </div>
 
@@ -165,6 +166,10 @@
             <div class="card">
                 <div class="card-header">
                     <h2>🔍 Vue Plateau Redressée (Perspective Transform 512×512)</h2>
+                    <div style="display: flex; gap: 6px;">
+                        <button id="btn-toggle-warped-grid" class="btn active" style="padding: 2px 8px; font-size: 0.75rem;"># Grille</button>
+                        <button id="btn-toggle-warped-arrow" class="btn active" style="padding: 2px 8px; font-size: 0.75rem; border-color: #38bdf8; color: #38bdf8;">↗ Flèche</button>
+                    </div>
                 </div>
                 <div class="warped-container">
                     <img id="warped-stream" class="warped-stream" src="" alt="Vue Redressée" style="display: none;">
@@ -178,11 +183,25 @@
             <div class="card">
                 <div class="card-header">
                     <h2>♟️ État de la Partie & Commandes</h2>
-                    <span id="turn-badge" class="badge badge-offline">En attente</span>
+                    <div style="display: flex; gap: 6px; align-items: center;">
+                        <button id="btn-toggle-2d-arrow" class="btn active" style="padding: 2px 8px; font-size: 0.75rem; border-color: #38bdf8; color: #38bdf8;">↗ Flèche 2D</button>
+                        <span id="turn-badge" class="badge badge-offline">En attente</span>
+                    </div>
                 </div>
 
-                <div class="digital-board-wrapper">
+                <div class="digital-board-wrapper" style="position: relative;">
                     <div id="digital-chess-board" class="chess-board-grid"></div>
+                    <svg id="board-arrow-svg" style="position: absolute; top: 10px; left: 50%; transform: translateX(-50%); width: 304px; height: 304px; pointer-events: none; z-index: 10;">
+                        <defs>
+                            <marker id="arrowhead" markerWidth="8" markerHeight="8" refX="5" refY="3" orient="auto">
+                                <polygon points="0 0, 6 3, 0 6" fill="#38bdf8" />
+                            </marker>
+                            <marker id="arrowhead-bot" markerWidth="8" markerHeight="8" refX="5" refY="3" orient="auto">
+                                <polygon points="0 0, 6 3, 0 6" fill="#eab308" />
+                            </marker>
+                        </defs>
+                        <line id="svg-move-arrow" x1="0" y1="0" x2="0" y2="0" stroke="#38bdf8" stroke-width="4" stroke-linecap="round" marker-end="url(#arrowhead)" style="display: none;" />
+                    </svg>
                 </div>
 
                 <div class="game-controls">

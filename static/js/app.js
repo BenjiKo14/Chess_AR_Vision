@@ -1,5 +1,6 @@
-// État global frontend
-let cameraConnected = false;
+let show2DArrow = true;
+let currentLastMoveUci = null;
+let currentPendingBotMove = null;
 let editingCorners = false;
 let activeDragCorner = null;
 let currentCornersNorm = [[0.2, 0.15], [0.8, 0.15], [0.85, 0.85], [0.15, 0.85]];
@@ -70,6 +71,7 @@ function updateDigitalBoard(fen, lastMoveUci) {
     });
 
     if (lastMoveUci && lastMoveUci.length >= 4) {
+        currentLastMoveUci = lastMoveUci;
         const fCol = lastMoveUci.charCodeAt(0) - 97;
         const fRow = parseInt(lastMoveUci[1]) - 1;
         const tCol = lastMoveUci.charCodeAt(2) - 97;
@@ -83,6 +85,47 @@ function updateDigitalBoard(fen, lastMoveUci) {
         if (fromEl) fromEl.classList.add('highlight-from');
         if (toEl) toEl.classList.add('highlight-to');
     }
+
+    render2DMoveArrow();
+}
+
+function render2DMoveArrow() {
+    const arrowLine = document.getElementById('svg-move-arrow');
+    if (!arrowLine) return;
+
+    if (!show2DArrow) {
+        arrowLine.style.display = 'none';
+        return;
+    }
+
+    // Priorité à un coup en attente du Bot ou au dernier coup joué
+    const uci = (currentPendingBotMove && currentPendingBotMove.uci) ? currentPendingBotMove.uci : currentLastMoveUci;
+    if (!uci || uci.length < 4) {
+        arrowLine.style.display = 'none';
+        return;
+    }
+
+    const fCol = uci.charCodeAt(0) - 97;
+    const fRow = parseInt(uci[1]) - 1;
+    const tCol = uci.charCodeAt(2) - 97;
+    const tRow = parseInt(uci[3]) - 1;
+
+    // Cases 38x38 px : rangées inversées (7 - row)
+    const sqSize = 38;
+    const x1 = fCol * sqSize + sqSize / 2;
+    const y1 = (7 - fRow) * sqSize + sqSize / 2;
+    const x2 = tCol * sqSize + sqSize / 2;
+    const y2 = (7 - tRow) * sqSize + sqSize / 2;
+
+    const isBot = !!(currentPendingBotMove && currentPendingBotMove.uci);
+    arrowLine.setAttribute('x1', x1);
+    arrowLine.setAttribute('y1', y1);
+    arrowLine.setAttribute('x2', x2);
+    arrowLine.setAttribute('y2', y2);
+    arrowLine.setAttribute('stroke', isBot ? '#eab308' : '#38bdf8');
+    arrowLine.setAttribute('marker-end', isBot ? 'url(#arrowhead-bot)' : 'url(#arrowhead)');
+    arrowLine.style.display = 'block';
+}
 }
 
 function initEventListeners() {
@@ -154,6 +197,39 @@ function initEventListeners() {
         this.classList.toggle('active');
         postJSON('/api/vision/overlay-settings', { show_ar_labels: this.classList.contains('active') });
     });
+    const btnToggleArArrow = document.getElementById('btn-toggle-ar-arrow');
+    if (btnToggleArArrow) {
+        btnToggleArArrow.addEventListener('click', function() {
+            this.classList.toggle('active');
+            postJSON('/api/vision/overlay-settings', { show_ar_arrow: this.classList.contains('active') });
+        });
+    }
+
+    const btnToggleWarpedGrid = document.getElementById('btn-toggle-warped-grid');
+    if (btnToggleWarpedGrid) {
+        btnToggleWarpedGrid.addEventListener('click', function() {
+            this.classList.toggle('active');
+            postJSON('/api/vision/overlay-settings', { show_warped_grid: this.classList.contains('active') });
+        });
+    }
+
+    const btnToggleWarpedArrow = document.getElementById('btn-toggle-warped-arrow');
+    if (btnToggleWarpedArrow) {
+        btnToggleWarpedArrow.addEventListener('click', function() {
+            this.classList.toggle('active');
+            postJSON('/api/vision/overlay-settings', { show_warped_arrow: this.classList.contains('active') });
+        });
+    }
+
+    const btnToggle2DArrow = document.getElementById('btn-toggle-2d-arrow');
+    if (btnToggle2DArrow) {
+        btnToggle2DArrow.addEventListener('click', function() {
+            this.classList.toggle('active');
+            show2DArrow = this.classList.contains('active');
+            render2DMoveArrow();
+        });
+    }
+
     const btnToggleConsole = document.getElementById('btn-toggle-console');
     if (btnToggleConsole) {
         btnToggleConsole.addEventListener('click', function() {
@@ -502,6 +578,7 @@ function pollGameStatus() {
 function updateGameUI(data) {
     if (!data || !data.game) return;
     const g = data.game;
+    currentPendingBotMove = g.pending_bot_move;
     updateDigitalBoard(g.fen, g.last_move);
 
     const turnBadge = document.getElementById('turn-badge');

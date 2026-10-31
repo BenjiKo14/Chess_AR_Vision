@@ -61,7 +61,9 @@ class ChessVisionManager:
         # Options d'affichage AR
         self.show_ar_grid = True
         self.show_ar_labels = True
+        self.show_ar_arrow = True      # Flèche AR sur l'écran caméra principal
         self.show_warped_grid = True
+        self.show_warped_arrow = True  # Flèche sur la vue plateau redressée 512x512
         self.show_aruco_debug = True  # Affiche les carrés ArUco détectés avec leur contour vert et leur ID
         self.last_detected_markers = {}  # Stocke id -> np.array (4x2)
         self.last_aruco_centers_norm = None  # Stocke les 4 centres bruts des marqueurs pour ajuster l'inset en direct
@@ -606,6 +608,8 @@ class ChessVisionManager:
             warped_display = warped.copy()
             if self.show_warped_grid:
                 self._draw_warped_grid_overlay(warped_display)
+            if self.show_warped_arrow and self.ar_arrow:
+                self._draw_warped_arrow(warped_display, self.ar_arrow)
 
             ok, buf = cv2.imencode('.jpg', warped_display, [cv2.IMWRITE_JPEG_QUALITY, 85])
             if ok:
@@ -719,7 +723,7 @@ class ChessVisionManager:
                 cv2.putText(display_frame, "NOIRS (8)", mid_black, cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 130, 70), 2, cv2.LINE_AA)
 
         # D. Flèche AR projetée en perspective (coup du bot ou coach)
-        if self.ar_arrow:
+        if self.show_ar_arrow and self.ar_arrow:
             self._draw_perspective_arrow(display_frame, overlay, self.ar_arrow)
 
         # E. Indicateur de stabilité en bandeau discret en haut
@@ -787,6 +791,63 @@ class ChessVisionManager:
             cv2.fillPoly(display_frame, [pts_cam], color)
             cv2.polylines(display_frame, [pts_cam], True, (255, 255, 255), 1, cv2.LINE_AA)
 
+    def _draw_warped_arrow(self, warped_frame, arrow_data):
+        """Dessine directement la flèche de coup dans le repère redressé 512x512."""
+        from_sq = arrow_data.get("from_sq")
+        to_sq = arrow_data.get("to_sq")
+        if from_sq is None or to_sq is None:
+            return
+
+        is_capture = arrow_data.get("is_capture", False)
+        color = arrow_data.get("color", (0, 220, 255))
+
+        f_col = from_sq % 8
+        f_row = 7 - (from_sq // 8)
+        t_col = to_sq % 8
+        t_row = 7 - (to_sq // 8)
+
+        # Surbrillance des 2 cases sur la miniature
+        overlay = warped_frame.copy()
+        fx1, fy1, fx2, fy2 = self.square_to_warped_rect(f_col, f_row)
+        tx1, ty1, tx2, ty2 = self.square_to_warped_rect(t_col, t_row)
+        cv2.rectangle(overlay, (fx1, fy1), (fx2, fy2), (0, 160, 255), -1)
+        cv2.rectangle(overlay, (tx1, ty1), (tx2, ty2), (40, 220, 80) if not is_capture else (30, 40, 230), -1)
+        cv2.addWeighted(overlay, 0.35, warped_frame, 0.65, 0, warped_frame)
+
+        # Coordonnées des centres
+        fx = (fx1 + fx2) / 2.0
+        fy = (fy1 + fy2) / 2.0
+        tx = (tx1 + tx2) / 2.0
+        ty = (ty1 + ty2) / 2.0
+
+        dx = tx - fx
+        dy = ty - fy
+        length = np.hypot(dx, dy)
+        if length > 5:
+            ux = dx / length
+            uy = dy / length
+            vx = -uy
+            vy = ux
+
+            shaft_w = 7.0
+            head_len = min(26.0, length * 0.4)
+            head_w = 16.0
+
+            base_head_x = tx - ux * head_len
+            base_head_y = ty - uy * head_len
+
+            p1 = (fx + vx * shaft_w, fy + vy * shaft_w)
+            p2 = (base_head_x + vx * shaft_w, base_head_y + vy * shaft_w)
+            p3 = (base_head_x + vx * head_w, base_head_y + vy * head_w)
+            p4 = (tx, ty)
+            p5 = (base_head_x - vx * head_w, base_head_y - vy * head_w)
+            p6 = (base_head_x - vx * shaft_w, base_head_y - vy * shaft_w)
+            p7 = (fx - vx * shaft_w, fy - vy * shaft_w)
+
+            pts = np.array([p1, p2, p3, p4, p5, p6, p7], dtype=np.int32)
+            cv2.fillPoly(warped_frame, [pts], color)
+            cv2.polylines(warped_frame, [pts], True, (255, 255, 255), 1, cv2.LINE_AA)
+
     # --- Fonctions Slice 2 : Extraction et analyse différentielle des 64 cases ---
 
     def get_square_roi(self, warped_512, sq, margin=12):
@@ -846,7 +907,9 @@ class ChessVisionManager:
                 'settings': {
                     'show_ar_grid': self.show_ar_grid,
                     'show_ar_labels': self.show_ar_labels,
+                    'show_ar_arrow': self.show_ar_arrow,
                     'show_warped_grid': self.show_warped_grid,
+                    'show_warped_arrow': self.show_warped_arrow,
                     'show_aruco_debug': self.show_aruco_debug
                 },
                 'detection_config': self.detection_config,
