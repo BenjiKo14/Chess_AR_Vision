@@ -485,9 +485,21 @@ function setupDetectionConsole() {
     });
 
     const chkHough = document.getElementById('cfg-use-hough');
-    if (chkHough) {
-        chkHough.addEventListener('change', pushConfigUpdate);
-    }
+    // Toutes les cases « avec/sans Hough » (barre caméra, vue redressée, console) restent synchronisées
+    document.querySelectorAll('.hough-toggle').forEach(chk => {
+        chk.addEventListener('change', function() {
+            const on = this.checked;
+            document.querySelectorAll('.hough-toggle').forEach(o => { o.checked = on; });
+            postJSON('/api/vision/detection-config', { use_hough_refine: on }).then(res => {
+                if (res && res.success) {
+                    const n = res.status && res.status.grid_refined_lines;
+                    document.getElementById('banner-action').innerText = on
+                        ? `📐 AVEC Hough : quadrillage interne calé sur les vraies cases (${n ?? '?'}/14 lignes) — contour inchangé.`
+                        : '▦ SANS Hough : quadrillage uniforme 8×8 dans le contour.';
+                }
+            });
+        });
+    });
 
     const btnReset = document.getElementById('btn-reset-det-config');
     if (btnReset) {
@@ -508,7 +520,7 @@ function setupDetectionConsole() {
                     valEl.innerText = `${defaults[s.id]}${s.unit}`;
                 }
             });
-            if (chkHough) chkHough.checked = true;
+            if (chkHough) document.querySelectorAll('.hough-toggle').forEach(o => { o.checked = true; });
             pushConfigUpdate();
         });
     }

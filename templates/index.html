@@ -62,6 +62,9 @@
                     <a href="/static/aruco/planche_aruco_imprimable.png" target="_blank" class="btn" style="color: #38bdf8; text-decoration: none;">🖨️ Imprimer ArUco</a>
                     <button id="btn-toggle-aruco" class="btn active" style="color: #4ade80;">🟩 Voir ArUco</button>
                     <button id="btn-toggle-grid" class="btn active"># Grille AR</button>
+                    <label class="btn" style="display: inline-flex; align-items: center; gap: 5px; border-color: #22d3ee; color: #22d3ee; cursor: pointer;" title="Avec : les lignes internes sont calées sur les vraies séparations de cases (le contour ne bouge pas). Sans : quadrillage uniforme 8x8.">
+                        <input type="checkbox" id="chk-hough-toolbar" class="hough-toggle" checked style="accent-color: #22d3ee; cursor: pointer;"> 📐 Avec Hough
+                    </label>
                     <button id="btn-toggle-labels" class="btn active">🔤 Labels a-h</button>
                     <button id="btn-toggle-ar-arrow" class="btn active" style="border-color: #38bdf8; color: #38bdf8;">↗ Flèche AR</button>
                     <button id="btn-toggle-console" class="btn" style="border-color: #a855f7; color: #d8b4fe;">🎛️ Console Config ▾</button>
@@ -153,7 +156,7 @@
                                 <label for="cfg-use-hough" style="font-weight: 600; color: #38bdf8; cursor: pointer;">📐 Calage Lignes Hough (Subpixel)</label>
                                 <div style="font-size: 0.7rem; color: #94a3b8;">Ajuste automatiquement les 4 coins sur les rainures du damier</div>
                             </div>
-                            <input type="checkbox" id="cfg-use-hough" checked style="width: 18px; height: 18px; accent-color: #38bdf8; cursor: pointer;">
+                            <input type="checkbox" id="cfg-use-hough" class="hough-toggle" checked style="width: 18px; height: 18px; accent-color: #38bdf8; cursor: pointer;">
                         </div>
                     </div>
                 </div>
@@ -168,6 +171,9 @@
                     <h2>🔍 Vue Plateau Redressée (Perspective Transform 512×512)</h2>
                     <div style="display: flex; gap: 6px;">
                         <button id="btn-toggle-warped-grid" class="btn active" style="padding: 2px 8px; font-size: 0.75rem;"># Grille</button>
+                        <label class="btn" style="padding: 2px 8px; font-size: 0.75rem; display: inline-flex; align-items: center; gap: 4px; border-color: #22d3ee; color: #22d3ee; cursor: pointer;">
+                            <input type="checkbox" id="chk-hough-warped" class="hough-toggle" checked style="accent-color: #22d3ee; cursor: pointer;"> Hough
+                        </label>
                         <button id="btn-toggle-warped-arrow" class="btn active" style="padding: 2px 8px; font-size: 0.75rem; border-color: #38bdf8; color: #38bdf8;">↗ Flèche</button>
                     </div>
                 </div>

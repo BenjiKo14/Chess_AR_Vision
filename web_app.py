@@ -186,6 +186,7 @@ def vision_corners():
     corners = data.get('corners')
     if corners and len(corners) == 4:
         vision_mgr.set_corners(corners)
+        vision_mgr.refit_grid(camera_mgr.get_raw_frame())
         return jsonify({'success': True, 'corners': vision_mgr.corners_norm})
     return jsonify({'success': False, 'error': 'Format de coins invalide'}), 400
 

@@ -68,6 +68,9 @@ class ChessVisionManager:
         self.last_detected_markers = {}  # Stocke id -> np.array (4x2)
         self.last_aruco_centers_norm = None  # Stocke les 4 centres bruts des marqueurs pour ajuster l'inset en direct
         # Lignes directrices exactes détectées par Hough (9 lignes horizontales et 9 lignes verticales dans 512x512)
+        # Quadrillage interne affiné (lignes internes calées sur les vraies séparations ; contour jamais modifié)
+        self.refined_grid = None
+        self.refined_grid_count = 0
         self.hough_grid_lines = {
             'rows': [float(i * SQUARE_SIZE) for i in range(9)],
             'cols': [float(j * SQUARE_SIZE) for j in range(9)]
@@ -162,6 +165,7 @@ class ChessVisionManager:
                 self.corners_norm = [[float(p[0]), float(p[1])] for p in corners]
                 self.is_calibrated = True
                 self.last_frame_shape = None
+                self.refined_grid = None  # le quadrillage affiné dépend du contour : à recalculer
                 self.save_calibration()
                 return True
         return False
@@ -172,6 +176,7 @@ class ChessVisionManager:
             # Rotation horaire: A8 devient H8 etc.
             self.corners_norm = [self.corners_norm[1], self.corners_norm[2], self.corners_norm[3], self.corners_norm[0]]
             self.last_frame_shape = None
+            self.refined_grid = None
             self.save_calibration()
             return self.corners_norm
 
@@ -213,31 +218,66 @@ class ChessVisionManager:
         transformed = cv2.perspectiveTransform(pts, self.H_inv)
         return [(float(pt[0][0]), float(pt[0][1])) for pt in transformed]
 
+    # --- Modèle de quadrillage (repère redressé 512x512) ---
+    # Chaque ligne verticale k est un segment (x_haut, x_bas) ; chaque ligne horizontale k est (y_gauche, y_droite).
+    # Les lignes 0 et 8 (contour) restent TOUJOURS fixées sur le contour détecté par ArUco.
+
+    @staticmethod
+    def _uniform_grid():
+        return {
+            'v': [(float(k * SQUARE_SIZE), float(k * SQUARE_SIZE)) for k in range(9)],
+            'h': [(float(k * SQUARE_SIZE), float(k * SQUARE_SIZE)) for k in range(9)],
+        }
+
+    def _active_grid(self):
+        """Retourne la grille à utiliser : grille affinée (Hough/gradient) si activée, sinon uniforme."""
+        if self.detection_config.get("use_hough_refine", True) and getattr(self, 'refined_grid', None):
+            return self.refined_grid
+        return self._uniform_grid()
+
+    def grid_point(self, k_col, k_row, grid=None):
+        """Intersection de la ligne verticale k_col et de la ligne horizontale k_row (repère 512x512)."""
+        g = grid or self._active_grid()
+        xt, xb = g['v'][k_col]
+        yl, yr = g['h'][k_row]
+        # x = xt + (xb - xt) * y / S ; y = yl + (yr - yl) * x / S  -> résolution par itérations (converge très vite)
+        S = float(WARP_SIZE)
+        y = (yl + yr) / 2.0
+        x = xt + (xb - xt) * y / S
+        for _ in range(3):
+            y = yl + (yr - yl) * x / S
+            x = xt + (xb - xt) * y / S
+        return float(x), float(y)
+
+    def square_warped_polygon(self, col, row):
+        """4 sommets (repère 512x512) de la case col 0..7 (a..h), row 0..7 (8..1)."""
+        g = self._active_grid()
+        return [self.grid_point(col, row, g), self.grid_point(col + 1, row, g),
+                self.grid_point(col + 1, row + 1, g), self.grid_point(col, row + 1, g)]
+
     def square_to_warped_rect(self, col, row):
         """
         Retourne (x1, y1, x2, y2) dans l'image 512x512 pour col in 0..7 (a..h) et row in 0..7 (8..1).
-        Utilise les lignes exactes de la transformée de Hough si disponibles, acceptant une marge
-        naturelle de quelques pixels sur chaque case.
+        Basé sur la grille active (les cases peuvent différer de quelques pixels).
         """
-        if hasattr(self, 'hough_grid_lines') and self.hough_grid_lines:
-            cols = self.hough_grid_lines.get('cols', [i * SQUARE_SIZE for i in range(9)])
-            rows = self.hough_grid_lines.get('rows', [i * SQUARE_SIZE for i in range(9)])
-            x1 = int(round(cols[col]))
-            y1 = int(round(rows[row]))
-            x2 = int(round(cols[col + 1]))
-            y2 = int(round(rows[row + 1]))
-            return x1, y1, x2, y2
-
-        x1 = col * SQUARE_SIZE
-        y1 = row * SQUARE_SIZE
-        x2 = x1 + SQUARE_SIZE
-        y2 = y1 + SQUARE_SIZE
+        poly = self.square_warped_polygon(col, row)
+        xs = [p[0] for p in poly]
+        ys = [p[1] for p in poly]
+        x1 = int(round((xs[0] + xs[3]) / 2.0))
+        x2 = int(round((xs[1] + xs[2]) / 2.0))
+        y1 = int(round((ys[0] + ys[1]) / 2.0))
+        y2 = int(round((ys[2] + ys[3]) / 2.0))
+        x1, x2 = max(0, min(x1, WARP_SIZE)), max(0, min(x2, WARP_SIZE))
+        y1, y2 = max(0, min(y1, WARP_SIZE)), max(0, min(y2, WARP_SIZE))
         return x1, y1, x2, y2
+
+    def square_center_warped(self, col, row):
+        poly = self.square_warped_polygon(col, row)
+        return (sum(p[0] for p in poly) / 4.0, sum(p[1] for p in poly) / 4.0)
 
     def square_to_camera_polygon(self, col, row):
         """Retourne les 4 sommets projetés d'une case sur l'image caméra."""
-        x1, y1, x2, y2 = self.square_to_warped_rect(col, row)
-        pts = [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
+        pts = self.square_warped_polygon(col, row)
         return np.array(self.warped_points_to_camera(pts), dtype=np.int32)
 
     def _apply_inset_to_centers(self, centers_norm, inset_pct=None):
@@ -263,87 +303,139 @@ class ChessVisionManager:
         board_norm = cv2.perspectiveTransform(board_dst, H_m2b).reshape(4, 2)
         return [[float(p[0]), float(p[1])] for p in board_norm]
 
-    def _refine_grid_with_hough(self, frame, initial_corners_norm):
+    @staticmethod
+    def _robust_line_fit(samples, nominal, max_shift, center=WARP_SIZE / 2.0):
         """
-        Affine l'alignement des 4 coins en couplant la détection ArUco avec la Transformée de Hough.
-        Redresse temporairement le plateau, détecte les lignes horizontales et verticales du damier
-        avec cv2.HoughLinesP, puis ajuste les bords extérieurs au sous-pixel près sur les rainures réelles.
+        Ajuste pos = a + b*(t - center) sur des échantillons [(t, pos, poids)] avec rejet des points
+        aberrants (pièces, reflets). Retourne (pos_début, pos_fin) aux extrémités t=0 et t=WARP_SIZE.
         """
+        if len(samples) < 3:
+            return None
+        pts = np.array(samples, dtype=np.float64)
+        t, p, wgt = pts[:, 0] - center, pts[:, 1], pts[:, 2]
+        best_inl = None
+        # RANSAC exhaustif sur les paires (au plus 8 échantillons -> 28 paires)
+        n = len(pts)
+        for i in range(n):
+            for j in range(i + 1, n):
+                if abs(t[j] - t[i]) < 1e-6:
+                    continue
+                b = (p[j] - p[i]) / (t[j] - t[i])
+                a = p[i] - b * t[i]
+                inl = np.abs(p - (a + b * t)) < 1.8
+                if best_inl is None or inl.sum() > best_inl.sum() or \
+                   (inl.sum() == best_inl.sum() and wgt[inl].sum() > wgt[best_inl].sum()):
+                    best_inl = inl
+        if best_inl is None or best_inl.sum() < 4:
+            # Pas assez de points alignés : simple décalage si 3 points cohérents
+            med = float(np.median(p))
+            close = np.abs(p - med) < 1.8
+            if close.sum() >= 3:
+                off = float(np.average(p[close], weights=wgt[close]))
+                off = float(np.clip(off, nominal - max_shift, nominal + max_shift))
+                return off, off
+            return None
+        A = np.stack([np.ones(best_inl.sum()), t[best_inl]], axis=1)
+        W = np.sqrt(wgt[best_inl])
+        sol, *_ = np.linalg.lstsq(A * W[:, None], p[best_inl] * W, rcond=None)
+        a, b = float(sol[0]), float(sol[1])
+        p0 = float(np.clip(a + b * (0 - center), nominal - max_shift, nominal + max_shift))
+        p1 = float(np.clip(a + b * (WARP_SIZE - center), nominal - max_shift, nominal + max_shift))
+        return p0, p1
+
+    def fit_grid_lines(self, frame, corners_norm=None):
+        """
+        Aligne les 7 lignes verticales et 7 lignes horizontales INTERNES du damier sur les vraies
+        séparations de cases, sans jamais toucher au contour (coins ArUco).
+
+        Méthode (robuste aux pièces) : dans la vue redressée, pour chaque ligne et pour chacun des
+        8 segments qui la composent, on cherche le pic du gradient (Sobel) perpendiculaire dans une
+        fenêtre ±max_shift px autour de la position théorique. Une droite (inclinaison autorisée)
+        est ensuite ajustée par RANSAC sur les 8 pics, ce qui élimine les segments masqués par une pièce.
+        """
+        if frame is None:
+            return False
         try:
+            corners = corners_norm or self.corners_norm
             h, w = frame.shape[:2]
-            src_pts = np.float32([[p[0] * w, p[1] * h] for p in initial_corners_norm])
+            src_pts = np.float32([[p[0] * w, p[1] * h] for p in corners])
             dst_pts = np.float32([[0, 0], [WARP_SIZE, 0], [WARP_SIZE, WARP_SIZE], [0, WARP_SIZE]])
             H = cv2.getPerspectiveTransform(src_pts, dst_pts)
-            H_inv = cv2.getPerspectiveTransform(dst_pts, src_pts)
-            warped = cv2.warpPerspective(frame, H, (WARP_SIZE, WARP_SIZE))
+            warped = cv2.warpPerspective(frame, H, (WARP_SIZE, WARP_SIZE), flags=cv2.INTER_LINEAR)
 
             gray = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
-            clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-            cl = clahe.apply(gray)
-            edges = cv2.Canny(cl, 45, 140)
-            lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=38, minLineLength=35, maxLineGap=12)
-            if lines is None:
-                return initial_corners_norm, False
+            gray = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8)).apply(gray)
+            gray = cv2.GaussianBlur(gray, (3, 3), 0)
+            gx = np.abs(cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3))
+            gy = np.abs(cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3))
 
-            h_lines = []
-            v_lines = []
-            for l in lines:
-                x1, y1, x2, y2 = l.flatten()
-                dx = abs(x2 - x1)
-                dy = abs(y2 - y1)
-                if dx > 2.5 * dy:  # quasi-horizontal
-                    h_lines.append((min(x1, x2), max(x1, x2), float(y1 + y2) / 2.0))
-                elif dy > 2.5 * dx:  # quasi-vertical
-                    v_lines.append((min(y1, y2), max(y1, y2), float(x1 + x2) / 2.0))
+            T = int(self.detection_config.get("grid_max_shift", 8))
+            margin = 10  # on ignore les abords des intersections
+            grid = self._uniform_grid()
+            n_fitted = 0
 
-            targets = [i * float(SQUARE_SIZE) for i in range(9)]
-            refined_rows = {}
-            for i, t in enumerate(targets):
-                cands = [y for (x1, x2, y) in h_lines if abs(y - t) < 14 and (x2 - x1) > 40]
-                refined_rows[i] = float(np.median(cands)) if cands else t
+            for k in range(1, 8):
+                nominal = float(k * SQUARE_SIZE)
+                lo, hi = int(nominal) - T, int(nominal) + T + 1
+                for axis in ('v', 'h'):
+                    samples = []
+                    for s in range(8):
+                        a0, a1 = s * SQUARE_SIZE + margin, (s + 1) * SQUARE_SIZE - margin
+                        if axis == 'v':
+                            prof = gx[a0:a1, lo:hi].mean(axis=0)
+                        else:
+                            prof = gy[lo:hi, a0:a1].mean(axis=1)
+                        i = int(np.argmax(prof))
+                        med = float(np.median(prof)) + 1e-3
+                        strength = float(prof[i]) / med
+                        if strength < 1.6 or i == 0 or i == len(prof) - 1:
+                            continue
+                        # Affinage sous-pixel parabolique
+                        y0, y1, y2 = float(prof[i - 1]), float(prof[i]), float(prof[i + 1])
+                        den = (y0 - 2 * y1 + y2)
+                        sub = 0.5 * (y0 - y2) / den if abs(den) > 1e-6 else 0.0
+                        pos = lo + i + float(np.clip(sub, -0.5, 0.5))
+                        samples.append(((a0 + a1) / 2.0, pos, strength))
+                    fit = self._robust_line_fit(samples, nominal, T)
+                    if fit is not None:
+                        grid[axis][k] = fit
+                        n_fitted += 1
 
-            refined_cols = {}
-            for j, t in enumerate(targets):
-                cands = [x for (y1, y2, x) in v_lines if abs(x - t) < 14 and (y2 - y1) > 40]
-                refined_cols[j] = float(np.median(cands)) if cands else t
-
-            w_tl = [refined_cols[0], refined_rows[0]]
-            w_tr = [refined_cols[8], refined_rows[0]]
-            w_br = [refined_cols[8], refined_rows[8]]
-            w_bl = [refined_cols[0], refined_rows[8]]
-
-            # Sauvegarde des 9 lignes exactes pour que chaque case du quadrillage soit calée au millimètre
-            self.hough_grid_lines = {
-                'rows': [refined_rows[i] for i in range(9)],
-                'cols': [refined_cols[j] for j in range(9)]
-            }
-
-            warped_corners = np.float32([w_tl, w_tr, w_br, w_bl]).reshape(-1, 1, 2)
-            refined_cam = cv2.perspectiveTransform(warped_corners, H_inv).reshape(4, 2)
-            refined_norm = [[float(p[0] / w), float(p[1] / h)] for p in refined_cam]
-            return refined_norm, True
+            with self._lock:
+                self.refined_grid = grid
+                self.refined_grid_count = n_fitted
+            self.log(f"📐 Quadrillage aligné : {n_fitted}/14 lignes internes calées (contour inchangé)")
+            return n_fitted > 0
         except Exception as e:
-            self.log(f"Hough refinement fallback: {e}")
-            return initial_corners_norm, False
+            self.log(f"Alignement quadrillage impossible : {e}")
+            return False
+
+    def reset_grid(self):
+        with self._lock:
+            self.refined_grid = None
+            self.refined_grid_count = 0
 
     def update_detection_config(self, new_cfg, raw_frame=None):
         """Met à jour les paramètres de la console de détection et recalcule les coins si nécessaire."""
         with self._lock:
-            for k in ("min_side_px", "max_side_px", "clahe_clip", "bin_thresh", "border_err", "err_corr", "aruco_inset_pct"):
+            for k in ("min_side_px", "max_side_px", "clahe_clip", "bin_thresh", "border_err", "err_corr", "aruco_inset_pct", "grid_max_shift"):
                 if k in new_cfg and new_cfg[k] is not None:
                     self.detection_config[k] = float(new_cfg[k])
             if "use_hough_refine" in new_cfg:
                 self.detection_config["use_hough_refine"] = bool(new_cfg["use_hough_refine"])
 
-            # Si l'inset ou l'option Hough a changé et qu'on a déjà les 4 marqueurs en mémoire, ajuster la grille en temps réel !
-            if ("aruco_inset_pct" in new_cfg or "use_hough_refine" in new_cfg) and self.last_aruco_centers_norm and len(self.last_aruco_centers_norm) == 4:
-                adjusted = self._apply_inset_to_centers(self.last_aruco_centers_norm)
-                if self.detection_config.get("use_hough_refine", True) and raw_frame is not None:
-                    adjusted = self._refine_grid_with_hough(raw_frame, adjusted)
-                self.set_corners(adjusted)
+            # L'inset déplace le contour : on le recalcule depuis les centres ArUco mémorisés
+            if "aruco_inset_pct" in new_cfg and self.last_aruco_centers_norm and len(self.last_aruco_centers_norm) == 4:
+                self.set_corners(self._apply_inset_to_centers(self.last_aruco_centers_norm))
 
         if raw_frame is not None and any(k in new_cfg for k in ("min_side_px", "max_side_px", "clahe_clip", "bin_thresh", "border_err", "err_corr")):
-            self.detect_aruco_corners(raw_frame)
+            ok, corners, _ = self.detect_aruco_corners(raw_frame)
+            if ok:
+                self.set_corners(corners)
+
+        # Le quadrillage interne est toujours recalculé sur le contour courant (sans le modifier)
+        if raw_frame is not None and self.detection_config.get("use_hough_refine", True):
+            self.fit_grid_lines(raw_frame)
 
         return self.detection_config
 
@@ -478,21 +570,21 @@ class ChessVisionManager:
             raw_centers_norm = [[float(p[0] / w), float(p[1] / h)] for p in (tl, tr, br, bl)]
             self.last_aruco_centers_norm = raw_centers_norm
             board_corners_norm = self._apply_inset_to_centers(raw_centers_norm)
-
-            # Couplage avec la transformée de Hough pour caler la grille au pixel près sur les lignes réelles
-            msg_hough = ""
-            if cfg.get("use_hough_refine", True):
-                refined_corners, hough_ok = self._refine_grid_with_hough(frame, board_corners_norm)
-                if hough_ok:
-                    board_corners_norm = refined_corners
-                    msg_hough = " + Calage Lignes Hough (Subpixel)"
-
-            return True, board_corners_norm, f"4/4 marqueurs detectes (IDs: {detected_ids}) + Retrait bordure {cfg['aruco_inset_pct']}%{msg_hough}"
+            # Le contour reste celui des ArUco : l'alignement du quadrillage interne est fait ensuite
+            # par fit_grid_lines() sans modifier ces 4 coins.
+            return True, board_corners_norm, f"4/4 marqueurs detectes (IDs: {detected_ids}) + Retrait bordure {cfg['aruco_inset_pct']}%"
 
         if len(detected_ids) > 0:
             return False, None, f"{len(detected_ids)}/4 marqueur(s) detecte(s) (IDs: {detected_ids}) — ajustez les curseurs dans la Console Config"
 
         return False, None, "Aucun marqueur ArUco detecte — ajustez les curseurs CLAHE / Seuil Binaire"
+
+    def refit_grid(self, raw_frame):
+        """Recalcule (ou réinitialise) le quadrillage interne selon l'option avec/sans Hough."""
+        if raw_frame is not None and self.detection_config.get("use_hough_refine", True):
+            return self.fit_grid_lines(raw_frame)
+        self.reset_grid()
+        return False
 
     def auto_detect_board(self, raw_frame):
         """Détection automatique du plateau d'échecs (ArUco en priorité, puis fallback grille/contours)."""
@@ -503,6 +595,8 @@ class ChessVisionManager:
         has_aruco, aruco_corners, aruco_msg = self.detect_aruco_corners(raw_frame)
         if has_aruco:
             self.set_corners(aruco_corners)
+            if self.refit_grid(raw_frame):
+                aruco_msg += f" + Quadrillage aligné ({self.refined_grid_count}/14 lignes)"
             return True, aruco_msg, aruco_corners
 
         h, w = raw_frame.shape[:2]
@@ -622,29 +716,27 @@ class ChessVisionManager:
             return display_frame
 
     def _draw_warped_grid_overlay(self, img):
-        # Utiliser les lignes détectées par Hough si disponibles (tolérance de quelques pixels)
-        rows = self.hough_grid_lines.get('rows', [i * SQUARE_SIZE for i in range(9)]) if hasattr(self, 'hough_grid_lines') and self.hough_grid_lines else [i * SQUARE_SIZE for i in range(9)]
-        cols = self.hough_grid_lines.get('cols', [i * SQUARE_SIZE for i in range(9)]) if hasattr(self, 'hough_grid_lines') and self.hough_grid_lines else [i * SQUARE_SIZE for i in range(9)]
+        # Grille active : alignée (avec Hough) ou uniforme (sans Hough). Le contour (lignes 0 et 8) reste fixe.
+        g = self._active_grid()
+        refined = g is getattr(self, 'refined_grid', None)
+        line_col = (0, 220, 255) if refined else (0, 255, 120)
+        for k in range(9):
+            v = np.array([self.grid_point(k, r, g) for r in range(9)], dtype=np.float64)
+            hl = np.array([self.grid_point(c, k, g) for c in range(9)], dtype=np.float64)
+            for arr in (v, hl):
+                cv2.polylines(img, [np.round(arr * 16).astype(np.int32)], False, line_col, 1, cv2.LINE_AA, shift=4)
 
-        x_min, x_max = int(cols[0]), int(cols[-1])
-        y_min, y_max = int(rows[0]), int(rows[-1])
-
-        for y in rows:
-            cv2.line(img, (x_min, int(y)), (x_max, int(y)), (0, 255, 120), 1, cv2.LINE_AA)
-        for x in cols:
-            cv2.line(img, (int(x), y_min), (int(x), y_max), (0, 255, 120), 1, cv2.LINE_AA)
-
-        # Afficher étiquettes colonnes / rangées sur les bords
+        # Étiquettes colonnes / rangées centrées dans les cases réelles
         for c in range(8):
-            label = chr(ord('a') + c)
-            cx = int((cols[c] + cols[c + 1]) / 2.0) - 4
-            cv2.putText(img, label, (cx, y_max - 6),
+            cx, _ = self.square_center_warped(c, 7)
+            cv2.putText(img, chr(ord('a') + c), (int(cx) - 4, WARP_SIZE - 6),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1, cv2.LINE_AA)
         for r in range(8):
-            label = str(8 - r)
-            cy = int((rows[r] + rows[r + 1]) / 2.0) + 4
-            cv2.putText(img, label, (x_min + 6, cy),
+            _, cy = self.square_center_warped(0, r)
+            cv2.putText(img, str(8 - r), (6, int(cy) + 4),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(img, "Hough ON" if refined else "Hough OFF", (WARP_SIZE - 92, 16),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, line_col, 1, cv2.LINE_AA)
 
     def _draw_ar_elements(self, display_frame, w, h):
         """Dessine les overlays AR projetés sur la vidéo réelle."""
@@ -688,20 +780,15 @@ class ChessVisionManager:
 
         # D. Grille AR et contour perspective
         if self.show_ar_grid:
-            rows = self.hough_grid_lines.get('rows', [i * SQUARE_SIZE for i in range(9)]) if hasattr(self, 'hough_grid_lines') and self.hough_grid_lines else [i * SQUARE_SIZE for i in range(9)]
-            cols = self.hough_grid_lines.get('cols', [i * SQUARE_SIZE for i in range(9)]) if hasattr(self, 'hough_grid_lines') and self.hough_grid_lines else [i * SQUARE_SIZE for i in range(9)]
-            x_min, x_max = cols[0], cols[-1]
-            y_min, y_max = rows[0], rows[-1]
-
-            # Lignes horizontales exactes détectées par Hough
-            for y in rows[1:8]:
-                p_h = self.warped_points_to_camera([(x_min, y), (x_max, y)])
-                cv2.line(display_frame, (int(p_h[0][0]), int(p_h[0][1])), (int(p_h[1][0]), int(p_h[1][1])), (0, 220, 130), 1, cv2.LINE_AA)
-
-            # Lignes verticales exactes détectées par Hough
-            for x in cols[1:8]:
-                p_v = self.warped_points_to_camera([(x, y_min), (x, y_max)])
-                cv2.line(display_frame, (int(p_v[0][0]), int(p_v[0][1])), (int(p_v[1][0]), int(p_v[1][1])), (0, 220, 130), 1, cv2.LINE_AA)
+            g = self._active_grid()
+            refined = g is not None and g is getattr(self, 'refined_grid', None)
+            line_col = (0, 220, 130) if not refined else (255, 220, 0)  # cyan = quadrillage aligné
+            for k in range(1, 8):
+                v_pts = self.warped_points_to_camera([self.grid_point(k, r, g) for r in range(9)])
+                h_pts = self.warped_points_to_camera([self.grid_point(c, k, g) for c in range(9)])
+                for pts in (v_pts, h_pts):
+                    arr = np.round(np.array(pts, dtype=np.float64) * 16).astype(np.int32)
+                    cv2.polylines(display_frame, [arr], False, line_col, 1, cv2.LINE_AA, shift=4)
 
             # Cadre extérieur avec couleur d'orientation (Vert = Blancs / Rangée 1)
             corners_px = [(int(p[0] * w), int(p[1] * h)) for p in self.corners_norm]
@@ -748,11 +835,9 @@ class ChessVisionManager:
         t_col = to_sq % 8
         t_row = 7 - (to_sq // 8)
 
-        # Calcul dans le repère plat 512x512
-        fx = (f_col + 0.5) * SQUARE_SIZE
-        fy = (f_row + 0.5) * SQUARE_SIZE
-        tx = (t_col + 0.5) * SQUARE_SIZE
-        ty = (t_row + 0.5) * SQUARE_SIZE
+        # Calcul dans le repère plat 512x512 (centres des cases réelles)
+        fx, fy = self.square_center_warped(f_col, f_row)
+        tx, ty = self.square_center_warped(t_col, t_row)
 
         # Surbrillance des 2 cases
         poly_from = self.square_to_camera_polygon(f_col, f_row)
@@ -915,6 +1000,7 @@ class ChessVisionManager:
                 'detection_config': self.detection_config,
                 'detected_marker_ids': sorted(list(self.last_detected_markers.keys())),
                 'detected_aruco_ids': sorted(list(self.last_detected_markers.keys())),
+                'grid_refined_lines': int(self.refined_grid_count) if self.refined_grid else 0,
                 'is_board_stable': self.is_board_stable,
                 'motion_ratio': round(self.motion_ratio, 4)
             }
