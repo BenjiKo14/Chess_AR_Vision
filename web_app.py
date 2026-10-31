@@ -164,7 +164,7 @@ def vision_auto_calibrate():
         'success': ok,
         'message': msg,
         'corners': corners,
-        'detected_aruco_ids': list(vision_mgr.last_detected_aruco.keys())
+        'detected_aruco_ids': sorted(list(vision_mgr.last_detected_markers.keys()))
     })
 
 @app.route('/api/vision/detection-config', methods=['POST'])
@@ -176,7 +176,7 @@ def vision_detection_config():
         'success': True,
         'config': cfg,
         'corners': vision_mgr.corners_norm,
-        'detected_aruco_ids': list(vision_mgr.last_detected_aruco.keys()),
+        'detected_aruco_ids': sorted(list(vision_mgr.last_detected_markers.keys())),
         'status': vision_mgr.get_status()
     })
 

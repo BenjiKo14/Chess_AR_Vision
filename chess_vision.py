@@ -740,6 +740,7 @@ class ChessVisionManager:
                 },
                 'detection_config': self.detection_config,
                 'detected_marker_ids': sorted(list(self.last_detected_markers.keys())),
+                'detected_aruco_ids': sorted(list(self.last_detected_markers.keys())),
                 'is_board_stable': self.is_board_stable,
                 'motion_ratio': round(self.motion_ratio, 4)
             }
