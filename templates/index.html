@@ -44,14 +44,26 @@
                 </div>
 
                 <div class="toolbar">
+                    <span style="font-size: 0.8rem; font-weight: 600; color: #a855f7;">Filtres Cumulables :</span>
+                    <button id="btn-filter-reset" class="btn" style="color: #94a3b8;">✖ Réinitialiser (Couleur)</button>
+                    <button class="btn btn-filter" data-filter="clahe">✨ CLAHE (Contraste local)</button>
+                    <button class="btn btn-filter" data-filter="binary">🏁 Noir & Blanc Net (Binaire)</button>
+                    <button class="btn btn-filter" data-filter="otsu">🎯 Otsu Auto</button>
+                    <button class="btn btn-filter" data-filter="adaptive">🌓 Adaptive (Ombres)</button>
+                    <button class="btn btn-filter" data-filter="sharpen">🔪 Netteté (Sharpen)</button>
+                </div>
+
+                <div class="toolbar">
                     <span style="font-size: 0.8rem; font-weight: 600; color: #38bdf8;">Calibration :</span>
                     <button id="btn-auto-calib" class="btn btn-success">✨ Détection Auto (ArUco / Grille)</button>
                     <button id="btn-guide-4pts" class="btn" style="border-color: #f59e0b; color: #fbbf24;">🎯 Pointer 4 Clics</button>
                     <button id="btn-edit-corners" class="btn">📐 Ajuster (Manuel)</button>
                     <button id="btn-rotate-board" class="btn">🔄 Pivoter Blancs 90°</button>
                     <a href="/static/aruco/planche_aruco_imprimable.png" target="_blank" class="btn" style="color: #38bdf8; text-decoration: none;">🖨️ Imprimer ArUco</a>
+                    <button id="btn-toggle-aruco" class="btn active" style="color: #4ade80;">🟩 Voir ArUco</button>
                     <button id="btn-toggle-grid" class="btn active"># Grille AR</button>
                     <button id="btn-toggle-labels" class="btn active">🔤 Labels a-h</button>
+                    <button id="btn-toggle-console" class="btn active" style="border-color: #a855f7; color: #d8b4fe;">🎛️ Console Config</button>
                 </div>
 
                 <div class="viewport-container" id="viewport-box">
@@ -65,6 +77,75 @@
 
                 <div id="banner-action" class="status-banner">
                     ℹ️ Connectez votre caméra et placez votre échiquier sous l'objectif.
+                </div>
+
+                <!-- Console de Configuration Temps Réel (Détection Petits Carrés CLAHE + Binaire & Retrait Bordure) -->
+                <div id="detection-console-panel" class="settings-panel" style="margin: 0 12px 12px 12px; background: #0f172a; border: 1px solid #a855f7;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                        <span style="font-weight: 700; font-size: 0.85rem; color: #d8b4fe;">
+                            🎛️ Console Config Détection (ArUco & Petits Carrés N/B CLAHE)
+                        </span>
+                        <div style="display: flex; gap: 6px; align-items: center;">
+                            <span id="aruco-count-badge" class="badge badge-online" style="font-size: 0.75rem;">Marqueurs: --/4</span>
+                            <button id="btn-reset-det-config" class="btn" style="padding: 3px 8px; font-size: 0.75rem;">↺ Défaut Optimal</button>
+                        </div>
+                    </div>
+
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; font-size: 0.78rem;">
+                        <!-- Slider 1 : Retrait Bordure Bois (Inset %) -->
+                        <div style="background: #1e293b; padding: 8px; border-radius: 6px;">
+                            <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                                <label for="cfg-inset-pct" title="Déplace les 4 coins des ArUco (sur la bordure bois) vers l'intérieur des 64 cases">📏 Retrait Bordure Bois (Inset) :</label>
+                                <strong id="val-inset-pct" style="color: #38bdf8;">2.4 %</strong>
+                            </div>
+                            <input type="range" id="cfg-inset-pct" min="-4.0" max="10.0" step="0.2" value="2.4" style="width: 100%; accent-color: #38bdf8;">
+                        </div>
+
+                        <!-- Slider 2 : Taille Min Marqueur (px) -->
+                        <div style="background: #1e293b; padding: 8px; border-radius: 6px;">
+                            <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                                <label for="cfg-min-side" title="Taille minimale en pixels des petits carrés ArUco / N&B à détecter">🔍 Taille Min Carré (px) :</label>
+                                <strong id="val-min-side" style="color: #4ade80;">8 px</strong>
+                            </div>
+                            <input type="range" id="cfg-min-side" min="4" max="30" step="1" value="8" style="width: 100%; accent-color: #4ade80;">
+                        </div>
+
+                        <!-- Slider 3 : Taille Max Marqueur (px) -->
+                        <div style="background: #1e293b; padding: 8px; border-radius: 6px;">
+                            <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                                <label for="cfg-max-side" title="Taille maximale en pixels des carrés">🔍 Taille Max Carré (px) :</label>
+                                <strong id="val-max-side" style="color: #4ade80;">52 px</strong>
+                            </div>
+                            <input type="range" id="cfg-max-side" min="20" max="120" step="2" value="52" style="width: 100%; accent-color: #4ade80;">
+                        </div>
+
+                        <!-- Slider 4 : Intensité CLAHE -->
+                        <div style="background: #1e293b; padding: 8px; border-radius: 6px;">
+                            <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                                <label for="cfg-clahe-clip" title="Force du contraste local CLAHE avant seuillage">✨ Force Contraste CLAHE :</label>
+                                <strong id="val-clahe-clip" style="color: #a855f7;">3.5</strong>
+                            </div>
+                            <input type="range" id="cfg-clahe-clip" min="1.0" max="8.0" step="0.5" value="3.5" style="width: 100%; accent-color: #a855f7;">
+                        </div>
+
+                        <!-- Slider 5 : Seuil Binaire N/B -->
+                        <div style="background: #1e293b; padding: 8px; border-radius: 6px;">
+                            <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                                <label for="cfg-bin-thresh" title="Seuil de coupure entre Noir et Blanc (0..255)">🏁 Seuil Binaire N/B :</label>
+                                <strong id="val-bin-thresh" style="color: #fbbf24;">125</strong>
+                            </div>
+                            <input type="range" id="cfg-bin-thresh" min="40" max="220" step="5" value="125" style="width: 100%; accent-color: #fbbf24;">
+                        </div>
+
+                        <!-- Slider 6 : Tolérance Bordure Coupée -->
+                        <div style="background: #1e293b; padding: 8px; border-radius: 6px;">
+                            <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                                <label for="cfg-border-err" title="Tolérance aux bordures noires coupées aux ciseaux près du bord">✂️ Tolérance Bordure Coupée :</label>
+                                <strong id="val-border-err" style="color: #f43f5e;">0.85</strong>
+                            </div>
+                            <input type="range" id="cfg-border-err" min="0.20" max="0.95" step="0.05" value="0.85" style="width: 100%; accent-color: #f43f5e;">
+                        </div>
+                    </div>
                 </div>
             </div>
         </section>

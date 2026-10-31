@@ -90,14 +90,43 @@ function initEventListeners() {
     document.getElementById('btn-detect-cam').addEventListener('click', detectCameras);
     document.getElementById('btn-toggle-cam').addEventListener('click', toggleCamera);
     document.getElementById('input-upload-photo').addEventListener('change', uploadPhoto);
-    document.getElementById('btn-rotate-cam').addEventListener('click', () => {
-        postJSON('/api/camera/settings', { rotate_180: true });
+    document.getElementById('btn-rotate-cam').addEventListener('click', function() {
+        postJSON('/api/camera/settings', { toggle_rotate_180: true }).then(res => {
+            if (res.status && res.status.settings) {
+                this.classList.toggle('active', res.status.settings.rotate_180);
+            }
+        });
     });
-    document.getElementById('btn-flip-cam').addEventListener('click', () => {
-        postJSON('/api/camera/settings', { flip_h: true });
+    document.getElementById('btn-flip-cam').addEventListener('click', function() {
+        postJSON('/api/camera/settings', { toggle_flip_h: true }).then(res => {
+            if (res.status && res.status.settings) {
+                this.classList.toggle('active', res.status.settings.flip_h);
+            }
+        });
     });
     document.getElementById('btn-snapshot').addEventListener('click', () => {
         postJSON('/api/camera/snapshot', {});
+    });
+
+    // Filtres Vision Multiples & Cumulables
+    let currentFilters = [];
+    document.querySelectorAll('.btn-filter').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const fName = this.dataset.filter;
+            this.classList.toggle('active');
+            if (this.classList.contains('active')) {
+                if (!currentFilters.includes(fName)) currentFilters.push(fName);
+            } else {
+                currentFilters = currentFilters.filter(f => f !== fName);
+            }
+            postJSON('/api/camera/settings', { active_filters: currentFilters });
+        });
+    });
+
+    document.getElementById('btn-filter-reset').addEventListener('click', function() {
+        currentFilters = [];
+        document.querySelectorAll('.btn-filter').forEach(b => b.classList.remove('active'));
+        postJSON('/api/camera/settings', { active_filters: [] });
     });
 
     // Vision & Calibration
@@ -113,6 +142,10 @@ function initEventListeners() {
     });
     document.getElementById('btn-edit-corners').addEventListener('click', toggleEditCorners);
 
+    document.getElementById('btn-toggle-aruco').addEventListener('click', function() {
+        this.classList.toggle('active');
+        postJSON('/api/vision/overlay-settings', { show_aruco_debug: this.classList.contains('active') });
+    });
     document.getElementById('btn-toggle-grid').addEventListener('click', function() {
         this.classList.toggle('active');
         postJSON('/api/vision/overlay-settings', { show_ar_grid: this.classList.contains('active') });
@@ -121,6 +154,18 @@ function initEventListeners() {
         this.classList.toggle('active');
         postJSON('/api/vision/overlay-settings', { show_ar_labels: this.classList.contains('active') });
     });
+    const btnToggleConsole = document.getElementById('btn-toggle-console');
+    if (btnToggleConsole) {
+        btnToggleConsole.addEventListener('click', function() {
+            this.classList.toggle('active');
+            const panel = document.getElementById('detection-console-panel');
+            if (panel) {
+                panel.style.display = this.classList.contains('active') ? 'block' : 'none';
+            }
+        });
+    }
+
+    setupDetectionConsole();
 
     // Contrôles Partie
     document.getElementById('btn-new-game').addEventListener('click', () => {
@@ -301,6 +346,84 @@ function toggleCamera() {
     }
 }
 
+function updateArucoBadge(idsList) {
+    const badge = document.getElementById('aruco-count-badge');
+    if (!badge) return;
+    const count = Array.isArray(idsList) ? idsList.length : 0;
+    badge.innerText = `Marqueurs: ${count}/4 ${count > 0 ? '[' + idsList.map(i => '#' + i).join(',') + ']' : ''}`;
+    badge.className = count >= 4 ? 'badge badge-online' : 'badge badge-offline';
+}
+
+let detConfigTimer = null;
+function setupDetectionConsole() {
+    const sliders = [
+        { id: 'cfg-inset-pct', valId: 'val-inset-pct', key: 'aruco_inset_pct', unit: ' %', isFloat: true },
+        { id: 'cfg-min-side',  valId: 'val-min-side',  key: 'min_side_px',     unit: ' px', isFloat: false },
+        { id: 'cfg-max-side',  valId: 'val-max-side',  key: 'max_side_px',     unit: ' px', isFloat: false },
+        { id: 'cfg-clahe-clip',valId: 'val-clahe-clip',key: 'clahe_clip',      unit: '',    isFloat: true },
+        { id: 'cfg-bin-thresh',valId: 'val-bin-thresh',key: 'bin_thresh',      unit: '',    isFloat: false },
+        { id: 'cfg-border-err',valId: 'val-border-err',key: 'border_err',      unit: '',    isFloat: true }
+    ];
+
+    function pushConfigUpdate() {
+        const payload = {};
+        sliders.forEach(s => {
+            const el = document.getElementById(s.id);
+            if (el) {
+                payload[s.key] = s.isFloat ? parseFloat(el.value) : parseInt(el.value);
+            }
+        });
+        postJSON('/api/vision/detection-config', payload).then(res => {
+            if (res && res.success) {
+                if (res.corners) {
+                    currentCornersNorm = res.corners;
+                    drawOverlay();
+                }
+                if (res.detected_aruco_ids) {
+                    updateArucoBadge(res.detected_aruco_ids);
+                    const c = res.detected_aruco_ids.length;
+                    document.getElementById('banner-action').innerText =
+                        `🎛️ Paramètres appliqués en direct — ${c}/4 marqueurs détectés (Inset: ${payload.aruco_inset_pct}%).`;
+                }
+            }
+        });
+    }
+
+    sliders.forEach(s => {
+        const el = document.getElementById(s.id);
+        const valEl = document.getElementById(s.valId);
+        if (!el || !valEl) return;
+        el.addEventListener('input', () => {
+            valEl.innerText = `${el.value}${s.unit}`;
+            if (detConfigTimer) clearTimeout(detConfigTimer);
+            detConfigTimer = setTimeout(pushConfigUpdate, 120);
+        });
+    });
+
+    const btnReset = document.getElementById('btn-reset-det-config');
+    if (btnReset) {
+        btnReset.addEventListener('click', () => {
+            const defaults = {
+                'cfg-inset-pct': 2.4,
+                'cfg-min-side': 8,
+                'cfg-max-side': 52,
+                'cfg-clahe-clip': 3.5,
+                'cfg-bin-thresh': 125,
+                'cfg-border-err': 0.85
+            };
+            sliders.forEach(s => {
+                const el = document.getElementById(s.id);
+                const valEl = document.getElementById(s.valId);
+                if (el && defaults[s.id] !== undefined) {
+                    el.value = defaults[s.id];
+                    valEl.innerText = `${defaults[s.id]}${s.unit}`;
+                }
+            });
+            pushConfigUpdate();
+        });
+    }
+}
+
 function autoCalibrate() {
     const btn = document.getElementById('btn-auto-calib');
     const banner = document.getElementById('banner-action');
@@ -308,18 +431,21 @@ function autoCalibrate() {
     
     btn.disabled = true;
     btn.innerText = '⏳ Analyse ArUco & Grille...';
-    banner.innerText = '⏳ Recherche des marqueurs ArUco aux 4 coins...';
+    banner.innerText = '⏳ Recherche des marqueurs ArUco & petits carrés N/B aux 4 coins...';
 
     postJSON('/api/vision/auto-calibrate', {})
         .then(res => {
             btn.disabled = false;
             btn.innerText = originalText;
+            if (res.detected_aruco_ids) {
+                updateArucoBadge(res.detected_aruco_ids);
+            }
             if (res.success && res.corners) {
                 currentCornersNorm = res.corners;
                 drawOverlay();
                 banner.innerText = `✅ Succès : ${res.message}`;
             } else {
-                banner.innerText = `⚠️ ${res.message || "Aucun marqueur détecté"}. Vous pouvez aussi utiliser « 🎯 Pointer 4 Clics ».`;
+                banner.innerText = `⚠️ ${res.message || "Aucun marqueur détecté"}. Ajustez la Console Config ci-dessous ou cliquez sur « 🎯 Pointer 4 Clics ».`;
             }
         })
         .catch(err => {
@@ -333,9 +459,12 @@ function fetchVisionStatus() {
     fetch('/api/vision/status')
         .then(r => r.json())
         .then(data => {
-            if (data.corners_norm) {
+            if (data.corners_norm && !editingCorners && !guide4PointsMode) {
                 currentCornersNorm = data.corners_norm;
                 drawCornersOverlay();
+            }
+            if (data.detected_aruco_ids) {
+                updateArucoBadge(data.detected_aruco_ids);
             }
         });
 }
@@ -351,6 +480,7 @@ function pollGameStatus() {
         fetch('/api/camera/status').then(r => r.json()).then(data => {
             document.getElementById('fps-counter').innerText = `${data.fps} FPS`;
         });
+        fetchVisionStatus();
     }
     fetchGameStatus();
 }

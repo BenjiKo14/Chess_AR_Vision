@@ -106,7 +106,10 @@ def camera_settings():
     status = camera_mgr.update_settings(
         rotate_180=data.get('rotate_180'),
         flip_h=data.get('flip_h'),
-        show_crosshair=data.get('show_crosshair')
+        toggle_flip_h=bool(data.get('toggle_flip_h')),
+        toggle_rotate_180=bool(data.get('toggle_rotate_180')),
+        show_crosshair=data.get('show_crosshair'),
+        active_filters=data.get('active_filters')
     )
     return jsonify({'success': True, 'status': status})
 
@@ -157,7 +160,25 @@ def vision_auto_calibrate():
     if raw_frame is None:
         return jsonify({'success': False, 'error': 'Aucune image reçue de la caméra'}), 400
     ok, msg, corners = vision_mgr.auto_detect_board(raw_frame)
-    return jsonify({'success': ok, 'message': msg, 'corners': corners})
+    return jsonify({
+        'success': ok,
+        'message': msg,
+        'corners': corners,
+        'detected_aruco_ids': list(vision_mgr.last_detected_aruco.keys())
+    })
+
+@app.route('/api/vision/detection-config', methods=['POST'])
+def vision_detection_config():
+    data = request.get_json(silent=True) or {}
+    raw_frame = camera_mgr.get_raw_frame()
+    cfg = vision_mgr.update_detection_config(data, raw_frame=raw_frame)
+    return jsonify({
+        'success': True,
+        'config': cfg,
+        'corners': vision_mgr.corners_norm,
+        'detected_aruco_ids': list(vision_mgr.last_detected_aruco.keys()),
+        'status': vision_mgr.get_status()
+    })
 
 @app.route('/api/vision/corners', methods=['POST'])
 def vision_corners():
@@ -182,6 +203,8 @@ def vision_overlay_settings():
         vision_mgr.show_ar_labels = bool(data['show_ar_labels'])
     if 'show_warped_grid' in data:
         vision_mgr.show_warped_grid = bool(data['show_warped_grid'])
+    if 'show_aruco_debug' in data:
+        vision_mgr.show_aruco_debug = bool(data['show_aruco_debug'])
     return jsonify({'success': True, 'status': vision_mgr.get_status()})
 
 @app.route('/api/vision/warped_stream')

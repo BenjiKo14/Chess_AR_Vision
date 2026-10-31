@@ -62,6 +62,20 @@ class ChessVisionManager:
         self.show_ar_grid = True
         self.show_ar_labels = True
         self.show_warped_grid = True
+        self.show_aruco_debug = True  # Affiche les carrés ArUco détectés avec leur contour vert et leur ID
+        self.last_detected_markers = {}  # Stocke id -> np.array (4x2)
+        self.last_aruco_centers_norm = None  # Stocke les 4 centres bruts des marqueurs pour ajuster l'inset en direct
+
+        # Console de configuration des paramètres de détection (réglables depuis l'UI Web)
+        self.detection_config = {
+            "min_side_px": 8,
+            "max_side_px": 52,
+            "clahe_clip": 3.5,
+            "bin_thresh": 125,
+            "border_err": 0.85,
+            "err_corr": 0.85,
+            "aruco_inset_pct": 2.4,  # Retrait automatique (%) des marqueurs vers les coins du damier 8x8
+        }
 
         # Stabilité et mouvement (MotionGate)
         self.is_board_stable = True
@@ -69,14 +83,28 @@ class ChessVisionManager:
         self.last_motion_time = time.time()
         self.stability_delay = 0.75
 
-        # Support ArUco
-        self.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+        # Support ArUco multi-dictionnaires
+        self.aruco_dicts = [
+            ("DICT_4X4_50", cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)),
+            ("DICT_4X4_100", cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_100)),
+            ("DICT_5X5_50", cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_50)),
+            ("DICT_6X6_50", cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_6X6_50)),
+        ]
+        self.aruco_detectors = []
         if hasattr(cv2.aruco, 'ArucoDetector'):
             params = cv2.aruco.DetectorParameters()
-            self.aruco_detector = cv2.aruco.ArucoDetector(self.aruco_dict, params)
+            # Optimisations pour éclairage de salon et petits marqueurs
+            params.adaptiveThreshWinSizeMin = 3
+            params.adaptiveThreshWinSizeMax = 35
+            params.adaptiveThreshWinSizeStep = 4
+            params.minMarkerPerimeterRate = 0.015 # Permet de détecter les petits marqueurs même loin
+            params.maxMarkerPerimeterRate = 4.0
+            params.polygonalApproxAccuracyRate = 0.05
+            for name, d in self.aruco_dicts:
+                self.aruco_detectors.append((name, cv2.aruco.ArucoDetector(d, params)))
         else:
-            self.aruco_detector = None
-        self.auto_aruco_tracking = True  # Recalibration automatique temps réel si les 4 marqueurs sont vus !
+            self.aruco_detectors = []
+        self.auto_aruco_tracking = True
 
         # Éléments AR dynamiques fournis par ChessGameManager
         self.ar_arrow = None             # Dict: {"from_sq": int, "to_sq": int, "is_capture": bool, "color": tuple, "label": str}
@@ -191,52 +219,194 @@ class ChessVisionManager:
         pts = [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
         return np.array(self.warped_points_to_camera(pts), dtype=np.int32)
 
+    def _apply_inset_to_centers(self, centers_norm, inset_pct=None):
+        """
+        Convertit les 4 centres des marqueurs ArUco (posés sur le cadre en bois)
+        en les 4 coins exacts du damier 8x8 grâce au retrait projectif `inset_pct` (%).
+        """
+        if inset_pct is None:
+            inset_pct = float(self.detection_config.get("aruco_inset_pct", 2.4))
+        if abs(inset_pct) < 1e-4:
+            return [[float(p[0]), float(p[1])] for p in centers_norm]
+
+        src = np.float32(centers_norm)
+        d = (inset_pct / 100.0) * float(WARP_SIZE)
+        dst_markers = np.float32([
+            [-d, -d],
+            [WARP_SIZE + d, -d],
+            [WARP_SIZE + d, WARP_SIZE + d],
+            [-d, WARP_SIZE + d]
+        ])
+        H_m2b = cv2.getPerspectiveTransform(dst_markers, src)
+        board_dst = np.float32([[[0, 0]], [[WARP_SIZE, 0]], [[WARP_SIZE, WARP_SIZE]], [[0, WARP_SIZE]]])
+        board_norm = cv2.perspectiveTransform(board_dst, H_m2b).reshape(4, 2)
+        return [[float(p[0]), float(p[1])] for p in board_norm]
+
+    def update_detection_config(self, new_cfg, raw_frame=None):
+        """Met à jour les paramètres de la console de détection et recalcule les coins si nécessaire."""
+        with self._lock:
+            for k in ("min_side_px", "max_side_px", "clahe_clip", "bin_thresh", "border_err", "err_corr", "aruco_inset_pct"):
+                if k in new_cfg and new_cfg[k] is not None:
+                    self.detection_config[k] = float(new_cfg[k])
+
+            # Si seuls l'inset a changé et qu'on a déjà les 4 marqueurs en mémoire, ajuster la grille en temps réel !
+            if "aruco_inset_pct" in new_cfg and self.last_aruco_centers_norm and len(self.last_aruco_centers_norm) == 4:
+                adjusted = self._apply_inset_to_centers(self.last_aruco_centers_norm)
+                self.set_corners(adjusted)
+
+        if raw_frame is not None and any(k in new_cfg for k in ("min_side_px", "max_side_px", "clahe_clip", "bin_thresh", "border_err", "err_corr")):
+            self.detect_aruco_corners(raw_frame)
+
+        return self.detection_config
+
     def detect_aruco_corners(self, frame):
         """
-        Détecte les 4 marqueurs ArUco (IDs 0: A8, 1: H8, 2: H1, 3: A1).
-        Retourne (True, corners_norm) si les 4 sont détectés, sinon (False, None).
+        Détecte les 4 marqueurs aux coins avec un pipeline 3 passes haute sensibilité :
+        - Passe 1 : ArUco multi-échelle (x1.0 à x2.5) sur Gris & CLAHE (haute confiance)
+        - Passe 2 : ArUco multi-échelle sur CLAHE + Binaire avec tolérance de bordure coupée
+        - Passe 3 : Détecteur direct de petit carré noir à cœur blanc (CLAHE + Binaire) pour les marqueurs très petits (~10-15 px)
         """
         if frame is None:
-            return False, None
+            return False, None, "Pas d'image reçue"
 
         h, w = frame.shape[:2]
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        d = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
 
-        if self.aruco_detector is not None:
-            corners, ids, _ = self.aruco_detector.detectMarkers(gray)
-        else:
-            corners, ids, _ = cv2.aruco.detectMarkers(gray, self.aruco_dict)
+        cfg = self.detection_config
+        min_side = float(cfg.get("min_side_px", 8))
+        max_side = float(cfg.get("max_side_px", 52))
+        clahe_clip = float(cfg.get("clahe_clip", 3.5))
+        bin_thresh = int(cfg.get("bin_thresh", 125))
+        border_err = float(cfg.get("border_err", 0.85))
+        err_corr = float(cfg.get("err_corr", 0.85))
 
-        if ids is None or len(ids) < 4:
-            return False, None
+        found_markers = {}
+        marker_polys = {}
 
-        id_to_center = {}
-        for i, marker_id in enumerate(ids.flatten()):
-            if marker_id in (0, 1, 2, 3):
-                # Centre du marqueur ou son coin intérieur
-                m_corners = corners[i][0]
-                cx = float(np.mean(m_corners[:, 0]))
-                cy = float(np.mean(m_corners[:, 1]))
-                id_to_center[int(marker_id)] = (cx, cy)
+        # Passe 1 : ArUco multi-échelle standard sur gray + clahe (0 faux positif)
+        for scale in (1.0, 1.5, 2.0, 2.5):
+            up = gray if scale == 1.0 else cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+            clahe = cv2.createCLAHE(clipLimit=clahe_clip, tileGridSize=(8, 8)).apply(up)
+            for src in (up, clahe):
+                params = cv2.aruco.DetectorParameters()
+                params.minMarkerPerimeterRate = 0.01
+                params.maxMarkerPerimeterRate = 0.25
+                params.polygonalApproxAccuracyRate = 0.06
+                params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+                det = cv2.aruco.ArucoDetector(d, params)
+                corners, ids, _ = det.detectMarkers(src)
+                if ids is not None:
+                    for m, c in zip(ids.flatten(), corners):
+                        mid = int(m)
+                        if mid in (0, 1, 2, 3) and mid not in found_markers:
+                            pts = c[0] / scale
+                            side = float(np.linalg.norm(pts[0] - pts[1]))
+                            if min_side <= side <= max_side:
+                                center = pts.mean(axis=0)
+                                if all(np.hypot(center[0] - v[0], center[1] - v[1]) > 50 for v in found_markers.values()):
+                                    found_markers[mid] = (float(center[0]), float(center[1]))
+                                    marker_polys[mid] = pts
+            if len(found_markers) == 4:
+                break
 
-        if len(id_to_center) == 4:
-            # Ordre strict: 0 (A8), 1 (H8), 2 (H1), 3 (A1)
-            raw_corners = [id_to_center[0], id_to_center[1], id_to_center[2], id_to_center[3]]
-            norm_corners = [[pt[0] / w, pt[1] / h] for pt in raw_corners]
-            return True, norm_corners
+        # Passe 2 : Si < 4 marqueurs, passe CLAHE + Binaire + Tolérance de bordure (bords coupés aux ciseaux)
+        if len(found_markers) < 4:
+            for scale in (1.0, 1.5, 2.0):
+                up = gray if scale == 1.0 else cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+                clahe = cv2.createCLAHE(clipLimit=clahe_clip, tileGridSize=(8, 8)).apply(up)
+                _, bin_clahe = cv2.threshold(clahe, bin_thresh, 255, cv2.THRESH_BINARY)
+                for src in (clahe, bin_clahe):
+                    params = cv2.aruco.DetectorParameters()
+                    params.minMarkerPerimeterRate = 0.008
+                    params.maxMarkerPerimeterRate = 0.25
+                    params.adaptiveThreshWinSizeMin = 3
+                    params.adaptiveThreshWinSizeMax = 45
+                    params.adaptiveThreshWinSizeStep = 4
+                    params.maxErroneousBitsInBorderRate = border_err
+                    params.errorCorrectionRate = err_corr
+                    params.polygonalApproxAccuracyRate = 0.07
+                    det = cv2.aruco.ArucoDetector(d, params)
+                    corners, ids, _ = det.detectMarkers(src)
+                    if ids is not None:
+                        for m, c in zip(ids.flatten(), corners):
+                            mid = int(m)
+                            if mid in (0, 1, 2, 3) and mid not in found_markers:
+                                pts = c[0] / scale
+                                side = float(np.linalg.norm(pts[0] - pts[1]))
+                                if min_side <= side <= max_side:
+                                    center = pts.mean(axis=0)
+                                    if all(np.hypot(center[0] - v[0], center[1] - v[1]) > 60 for v in found_markers.values()):
+                                        found_markers[mid] = (float(center[0]), float(center[1]))
+                                        marker_polys[mid] = pts
+                if len(found_markers) == 4:
+                    break
 
-        return False, None
+        # Passe 3 : Détecteur direct de petit carré noir à cœur blanc (CLAHE + Binaire)
+        if len(found_markers) < 4:
+            cl_full = cv2.createCLAHE(clipLimit=clahe_clip, tileGridSize=(8, 8)).apply(gray)
+            for th_val in (bin_thresh, max(40, bin_thresh - 15), min(220, bin_thresh + 15), 100):
+                _, binary_inv = cv2.threshold(cl_full, int(th_val), 255, cv2.THRESH_BINARY_INV)
+                cnts, _ = cv2.findContours(binary_inv, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+                for c in cnts:
+                    x, y, bw, bh = cv2.boundingRect(c)
+                    if min_side <= bw <= max_side and min_side <= bh <= max_side:
+                        if 0.72 <= (bw / float(bh)) <= 1.38 and (cv2.contourArea(c) / float(bw * bh)) > 0.55:
+                            patch = cl_full[y:y+bh, x:x+bw]
+                            m = max(2, bw // 5)
+                            inner = patch[m:-m, m:-m]
+                            if inner.size > 0:
+                                bmask = np.ones_like(patch, dtype=bool)
+                                bmask[m:-m, m:-m] = False
+                                if np.mean(patch[bmask]) < 125 and np.percentile(inner, 90) > 150 and np.std(inner) > 32:
+                                    cx, cy = x + bw / 2.0, y + bh / 2.0
+                                    if all(np.hypot(cx - v[0], cy - v[1]) > 60 for v in found_markers.values()):
+                                        missing_ids = sorted(list(set([0, 1, 2, 3]) - set(found_markers.keys())))
+                                        if missing_ids:
+                                            mid = missing_ids[0]
+                                            found_markers[mid] = (float(cx), float(cy))
+                                            marker_polys[mid] = np.array([[x, y], [x+bw, y], [x+bw, y+bh], [x, y+bh]], dtype=np.float32)
+                                        if len(found_markers) == 4:
+                                            break
+                if len(found_markers) == 4:
+                    break
+
+        self.last_detected_markers = marker_polys
+        detected_ids = sorted(list(found_markers.keys()))
+
+        if len(found_markers) == 4:
+            # Ordonner géométriquement les 4 marqueurs pour garantir Haut-Gauche, Haut-Droite, Bas-Droite, Bas-Gauche
+            # ou utiliser l'ordre [0, 1, 2, 3] si tous sont cohérents
+            pts_list = [found_markers[0], found_markers[1], found_markers[2], found_markers[3]] if all(k in found_markers for k in (0, 1, 2, 3)) else list(found_markers.values())
+            pts_np = np.array(pts_list, dtype=np.float32)
+            sums = pts_np.sum(axis=1)
+            diffs = np.diff(pts_np, axis=1).flatten()
+
+            tl = pts_np[np.argmin(sums)]
+            br = pts_np[np.argmax(sums)]
+            tr = pts_np[np.argmin(diffs)]  # x grand, y petit -> y - x minimal
+            bl = pts_np[np.argmax(diffs)]  # x petit, y grand -> y - x maximal
+
+            raw_centers_norm = [[float(p[0] / w), float(p[1] / h)] for p in (tl, tr, br, bl)]
+            self.last_aruco_centers_norm = raw_centers_norm
+            board_corners_norm = self._apply_inset_to_centers(raw_centers_norm)
+            return True, board_corners_norm, f"4/4 marqueurs detectes (IDs: {detected_ids}) + Retrait bordure {cfg['aruco_inset_pct']}%"
+
+        if len(detected_ids) > 0:
+            return False, None, f"{len(detected_ids)}/4 marqueur(s) detecte(s) (IDs: {detected_ids}) — ajustez les curseurs dans la Console Config"
+
+        return False, None, "Aucun marqueur ArUco detecte — ajustez les curseurs CLAHE / Seuil Binaire"
 
     def auto_detect_board(self, raw_frame):
         """Détection automatique du plateau d'échecs (ArUco en priorité, puis fallback grille/contours)."""
         if raw_frame is None:
             return False, "Aucune image reçue", None
 
-        # Priorité 1 : Marqueurs ArUco (100% fiable, 2 ms)
-        has_aruco, aruco_corners = self.detect_aruco_corners(raw_frame)
+        # Priorité 1 : Marqueurs ArUco
+        has_aruco, aruco_corners, aruco_msg = self.detect_aruco_corners(raw_frame)
         if has_aruco:
             self.set_corners(aruco_corners)
-            return True, "Détection ArUco réussie (Marqueurs 0, 1, 2, 3)", aruco_corners
+            return True, aruco_msg, aruco_corners
 
         h, w = raw_frame.shape[:2]
         gray = cv2.cvtColor(raw_frame, cv2.COLOR_BGR2GRAY)
@@ -395,7 +565,20 @@ class ChessVisionManager:
                 cv2.addWeighted(overlay, alpha, display_frame, 1.0 - alpha, 0, display_frame)
                 overlay = display_frame.copy()
 
-        # C. Grille AR et contour perspective
+        # C. Affichage visuel des marqueurs ArUco détectés
+        if self.show_aruco_debug and self.last_detected_markers:
+            for mid, m_pts in self.last_detected_markers.items():
+                pts = m_pts.astype(int)
+                # Contour vert vif épais
+                cv2.polylines(display_frame, [pts], True, (0, 255, 0), 2, cv2.LINE_AA)
+                # Centre et label ID
+                cx = int(np.mean(pts[:, 0]))
+                cy = int(np.mean(pts[:, 1]))
+                cv2.circle(display_frame, (cx, cy), 4, (0, 0, 255), -1, cv2.LINE_AA)
+                cv2.putText(display_frame, f"ArUco #{mid}", (cx - 20, cy - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2, cv2.LINE_AA)
+
+        # D. Grille AR et contour perspective
         if self.show_ar_grid:
             # Lignes horizontales et verticales
             for i in range(1, 8):
@@ -552,8 +735,11 @@ class ChessVisionManager:
                 'settings': {
                     'show_ar_grid': self.show_ar_grid,
                     'show_ar_labels': self.show_ar_labels,
-                    'show_warped_grid': self.show_warped_grid
+                    'show_warped_grid': self.show_warped_grid,
+                    'show_aruco_debug': self.show_aruco_debug
                 },
+                'detection_config': self.detection_config,
+                'detected_marker_ids': sorted(list(self.last_detected_markers.keys())),
                 'is_board_stable': self.is_board_stable,
                 'motion_ratio': round(self.motion_ratio, 4)
             }
