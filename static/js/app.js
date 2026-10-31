@@ -375,6 +375,11 @@ function setupDetectionConsole() {
                 payload[s.key] = s.isFloat ? parseFloat(el.value) : parseInt(el.value);
             }
         });
+        const chkHough = document.getElementById('cfg-use-hough');
+        if (chkHough) {
+            payload['use_hough_refine'] = chkHough.checked;
+        }
+
         postJSON('/api/vision/detection-config', payload).then(res => {
             if (res && res.success) {
                 if (res.corners) {
@@ -384,8 +389,9 @@ function setupDetectionConsole() {
                 if (res.detected_aruco_ids) {
                     updateArucoBadge(res.detected_aruco_ids);
                     const c = res.detected_aruco_ids.length;
+                    const houghTxt = payload.use_hough_refine ? ' + Lignes Hough activées' : '';
                     document.getElementById('banner-action').innerText =
-                        `🎛️ Paramètres appliqués en direct — ${c}/4 marqueurs détectés (Inset: ${payload.aruco_inset_pct}%).`;
+                        `🎛️ Paramètres appliqués en direct — ${c}/4 marqueurs détectés (Inset: ${payload.aruco_inset_pct}%${houghTxt}).`;
                 }
             }
         });
@@ -401,6 +407,11 @@ function setupDetectionConsole() {
             detConfigTimer = setTimeout(pushConfigUpdate, 120);
         });
     });
+
+    const chkHough = document.getElementById('cfg-use-hough');
+    if (chkHough) {
+        chkHough.addEventListener('change', pushConfigUpdate);
+    }
 
     const btnReset = document.getElementById('btn-reset-det-config');
     if (btnReset) {
@@ -421,6 +432,7 @@ function setupDetectionConsole() {
                     valEl.innerText = `${defaults[s.id]}${s.unit}`;
                 }
             });
+            if (chkHough) chkHough.checked = true;
             pushConfigUpdate();
         });
     }

@@ -75,6 +75,7 @@ class ChessVisionManager:
             "border_err": 0.85,
             "err_corr": 0.85,
             "aruco_inset_pct": 2.4,  # Retrait automatique (%) des marqueurs vers les coins du damier 8x8
+            "use_hough_refine": True, # Couplage avec la transformée de Hough pour calage subpixel sur les lignes de cases
         }
 
         # Stabilité et mouvement (MotionGate)
@@ -242,16 +243,77 @@ class ChessVisionManager:
         board_norm = cv2.perspectiveTransform(board_dst, H_m2b).reshape(4, 2)
         return [[float(p[0]), float(p[1])] for p in board_norm]
 
+    def _refine_grid_with_hough(self, frame, initial_corners_norm):
+        """
+        Affine l'alignement des 4 coins en couplant la détection ArUco avec la Transformée de Hough.
+        Redresse temporairement le plateau, détecte les lignes horizontales et verticales du damier
+        avec cv2.HoughLinesP, puis ajuste les bords extérieurs au sous-pixel près sur les rainures réelles.
+        """
+        try:
+            h, w = frame.shape[:2]
+            src_pts = np.float32([[p[0] * w, p[1] * h] for p in initial_corners_norm])
+            dst_pts = np.float32([[0, 0], [WARP_SIZE, 0], [WARP_SIZE, WARP_SIZE], [0, WARP_SIZE]])
+            H = cv2.getPerspectiveTransform(src_pts, dst_pts)
+            H_inv = cv2.getPerspectiveTransform(dst_pts, src_pts)
+            warped = cv2.warpPerspective(frame, H, (WARP_SIZE, WARP_SIZE))
+
+            gray = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
+            clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+            cl = clahe.apply(gray)
+            edges = cv2.Canny(cl, 45, 140)
+            lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=38, minLineLength=35, maxLineGap=12)
+            if lines is None:
+                return initial_corners_norm, False
+
+            h_lines = []
+            v_lines = []
+            for l in lines:
+                x1, y1, x2, y2 = l.flatten()
+                dx = abs(x2 - x1)
+                dy = abs(y2 - y1)
+                if dx > 2.5 * dy:  # quasi-horizontal
+                    h_lines.append((min(x1, x2), max(x1, x2), float(y1 + y2) / 2.0))
+                elif dy > 2.5 * dx:  # quasi-vertical
+                    v_lines.append((min(y1, y2), max(y1, y2), float(x1 + x2) / 2.0))
+
+            targets = [i * float(SQUARE_SIZE) for i in range(9)]
+            refined_rows = {}
+            for i, t in enumerate(targets):
+                cands = [y for (x1, x2, y) in h_lines if abs(y - t) < 14 and (x2 - x1) > 40]
+                refined_rows[i] = float(np.median(cands)) if cands else t
+
+            refined_cols = {}
+            for j, t in enumerate(targets):
+                cands = [x for (y1, y2, x) in v_lines if abs(x - t) < 14 and (y2 - y1) > 40]
+                refined_cols[j] = float(np.median(cands)) if cands else t
+
+            w_tl = [refined_cols[0], refined_rows[0]]
+            w_tr = [refined_cols[8], refined_rows[0]]
+            w_br = [refined_cols[8], refined_rows[8]]
+            w_bl = [refined_cols[0], refined_rows[8]]
+
+            warped_corners = np.float32([w_tl, w_tr, w_br, w_bl]).reshape(-1, 1, 2)
+            refined_cam = cv2.perspectiveTransform(warped_corners, H_inv).reshape(4, 2)
+            refined_norm = [[float(p[0] / w), float(p[1] / h)] for p in refined_cam]
+            return refined_norm, True
+        except Exception as e:
+            self.log(f"Hough refinement fallback: {e}")
+            return initial_corners_norm, False
+
     def update_detection_config(self, new_cfg, raw_frame=None):
         """Met à jour les paramètres de la console de détection et recalcule les coins si nécessaire."""
         with self._lock:
             for k in ("min_side_px", "max_side_px", "clahe_clip", "bin_thresh", "border_err", "err_corr", "aruco_inset_pct"):
                 if k in new_cfg and new_cfg[k] is not None:
                     self.detection_config[k] = float(new_cfg[k])
+            if "use_hough_refine" in new_cfg:
+                self.detection_config["use_hough_refine"] = bool(new_cfg["use_hough_refine"])
 
-            # Si seuls l'inset a changé et qu'on a déjà les 4 marqueurs en mémoire, ajuster la grille en temps réel !
-            if "aruco_inset_pct" in new_cfg and self.last_aruco_centers_norm and len(self.last_aruco_centers_norm) == 4:
+            # Si l'inset ou l'option Hough a changé et qu'on a déjà les 4 marqueurs en mémoire, ajuster la grille en temps réel !
+            if ("aruco_inset_pct" in new_cfg or "use_hough_refine" in new_cfg) and self.last_aruco_centers_norm and len(self.last_aruco_centers_norm) == 4:
                 adjusted = self._apply_inset_to_centers(self.last_aruco_centers_norm)
+                if self.detection_config.get("use_hough_refine", True) and raw_frame is not None:
+                    adjusted = self._refine_grid_with_hough(raw_frame, adjusted)
                 self.set_corners(adjusted)
 
         if raw_frame is not None and any(k in new_cfg for k in ("min_side_px", "max_side_px", "clahe_clip", "bin_thresh", "border_err", "err_corr")):
@@ -390,7 +452,16 @@ class ChessVisionManager:
             raw_centers_norm = [[float(p[0] / w), float(p[1] / h)] for p in (tl, tr, br, bl)]
             self.last_aruco_centers_norm = raw_centers_norm
             board_corners_norm = self._apply_inset_to_centers(raw_centers_norm)
-            return True, board_corners_norm, f"4/4 marqueurs detectes (IDs: {detected_ids}) + Retrait bordure {cfg['aruco_inset_pct']}%"
+
+            # Couplage avec la transformée de Hough pour caler la grille au pixel près sur les lignes réelles
+            msg_hough = ""
+            if cfg.get("use_hough_refine", True):
+                refined_corners, hough_ok = self._refine_grid_with_hough(frame, board_corners_norm)
+                if hough_ok:
+                    board_corners_norm = refined_corners
+                    msg_hough = " + Calage Lignes Hough (Subpixel)"
+
+            return True, board_corners_norm, f"4/4 marqueurs detectes (IDs: {detected_ids}) + Retrait bordure {cfg['aruco_inset_pct']}%{msg_hough}"
 
         if len(detected_ids) > 0:
             return False, None, f"{len(detected_ids)}/4 marqueur(s) detecte(s) (IDs: {detected_ids}) — ajustez les curseurs dans la Console Config"
