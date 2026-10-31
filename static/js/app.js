@@ -1,3 +1,8 @@
+// --- Variables globales de navigation dans l'historique (Chess.com style) ---
+let liveGameStatus = null;
+let browsingMoveIndex = null; // null = Direct (Live), 0 = Départ, 1..N = après coup N
+let gameMoveHistory = [];
+let initialGameFen = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 // État global frontend
 let cameraConnected = false;
 let show2DArrow = true;
@@ -22,11 +27,49 @@ document.addEventListener('DOMContentLoaded', () => {
     initDigitalBoard();
     initEventListeners();
     detectCameras();
+    checkCameraConnectionOnLoad();
     fetchVisionStatus();
     fetchGameStatus();
+    initHistoryNavControls();
+    initSavedGamesControls();
     setInterval(pollGameStatus, 1000);
     setInterval(pollLogs, 2000);
 });
+
+function checkCameraConnectionOnLoad() {
+    fetch('/api/camera/status').then(r => r.json()).then(data => {
+        if (data.settings) applyCameraSettingsToUI(data.settings);
+        if (data.connected) {
+            cameraConnected = true;
+            const btn = document.getElementById('btn-toggle-cam');
+            const imgStream = document.getElementById('cam-stream');
+            const warpedStream = document.getElementById('warped-stream');
+            const placeholder = document.getElementById('cam-placeholder');
+            const warpedPlaceholder = document.getElementById('warped-placeholder');
+            const badge = document.getElementById('cam-status-badge');
+
+            if (btn) {
+                btn.innerText = '⏹ Arrêter Caméra';
+                btn.className = 'btn btn-secondary';
+            }
+            if (badge) {
+                badge.innerText = 'Caméra En Direct';
+                badge.className = 'badge badge-online';
+            }
+            if (imgStream && placeholder) {
+                imgStream.src = `/api/camera/stream?t=${Date.now()}`;
+                imgStream.style.display = 'block';
+                placeholder.style.display = 'none';
+            }
+            if (warpedStream && warpedPlaceholder) {
+                warpedStream.src = `/api/vision/warped_stream?t=${Date.now()}`;
+                warpedStream.style.display = 'block';
+                warpedPlaceholder.style.display = 'none';
+            }
+            setTimeout(resizeCanvas, 500);
+        }
+    });
+}
 
 function initDigitalBoard() {
     const boardEl = document.getElementById('digital-chess-board');
@@ -44,9 +87,11 @@ function initDigitalBoard() {
     }
 }
 
-function updateDigitalBoard(fen, lastMoveUci) {
+function updateDigitalBoard(fen, lastMoveUci, checkInfo = null) {
     if (!fen) return;
     const parts = fen.split(' ')[0].split('/');
+    let kingSquareMap = { 'K': null, 'k': null };
+
     for (let r = 0; r < 8; r++) {
         const rowStr = parts[r];
         let col = 0;
@@ -63,14 +108,16 @@ function updateDigitalBoard(fen, lastMoveUci) {
                 const sqIdx = (7 - r) * 8 + col;
                 const sqEl = document.getElementById(`sq-${sqIdx}`);
                 if (sqEl) sqEl.innerText = PIECE_UNICODE[ch] || ch;
+                if (ch === 'K') kingSquareMap['K'] = sqIdx;
+                if (ch === 'k') kingSquareMap['k'] = sqIdx;
                 col++;
             }
         }
     }
 
-    // Effacer highlights
+    // Effacer highlights et alertes échec
     document.querySelectorAll('.chess-sq').forEach(el => {
-        el.classList.remove('highlight-from', 'highlight-to');
+        el.classList.remove('highlight-from', 'highlight-to', 'king-check', 'king-checkmate');
     });
 
     currentLastMoveUci = lastMoveUci || null;
@@ -87,6 +134,25 @@ function updateDigitalBoard(fen, lastMoveUci) {
         const toEl = document.getElementById(`sq-${toIdx}`);
         if (fromEl) fromEl.classList.add('highlight-from');
         if (toEl) toEl.classList.add('highlight-to');
+    }
+
+    // Coloration du Roi en Échec (Orange) ou Échec et Mat (Rouge)
+    if (checkInfo) {
+        let kingSq = checkInfo.checkSquare;
+        if (kingSq === null || kingSq === undefined) {
+            const turn = checkInfo.turn || (fen.split(' ')[1] === 'w' ? 'white' : 'black');
+            kingSq = (turn === 'white') ? kingSquareMap['K'] : kingSquareMap['k'];
+        }
+        if (kingSq !== null && kingSq !== undefined) {
+            const kingEl = document.getElementById(`sq-${kingSq}`);
+            if (kingEl) {
+                if (checkInfo.isCheckmate) {
+                    kingEl.classList.add('king-checkmate');
+                } else if (checkInfo.isCheck) {
+                    kingEl.classList.add('king-check');
+                }
+            }
+        }
     }
 
     render2DMoveArrow();
@@ -197,6 +263,24 @@ function initEventListeners() {
 
     // Vision & Calibration
     document.getElementById('btn-auto-calib').addEventListener('click', autoCalibrate);
+    const chkContinuous = document.getElementById('chk-continuous-calib');
+    if (chkContinuous) {
+        chkContinuous.addEventListener('change', (e) => {
+            const enabled = e.target.checked;
+            postJSON('/api/vision/continuous-detection', { enabled })
+                .then(res => {
+                    const banner = document.getElementById('banner-action');
+                    if (banner) {
+                        banner.innerText = enabled 
+                            ? '🔄 Détection continue activée (réajustement auto toutes les 5s)'
+                            : '⏸️ Détection continue désactivée';
+                    }
+                })
+                .catch(err => {
+                    console.error('Erreur toggle détection continue:', err);
+                });
+        });
+    }
     document.getElementById('btn-guide-4pts').addEventListener('click', start4PointsGuide);
     document.getElementById('btn-rotate-board').addEventListener('click', () => {
         postJSON('/api/vision/rotate-board', {}).then(res => {
@@ -268,6 +352,26 @@ function initEventListeners() {
             render2DMoveArrow();
         });
     }
+
+    const settingButtonMap = {
+        'btn-toggle-aruco': 'show_aruco_debug',
+        'btn-toggle-grid': 'show_ar_grid',
+        'btn-toggle-labels': 'show_ar_labels',
+        'btn-toggle-ar-arrow': 'show_ar_arrow',
+        'btn-toggle-vision-debug': 'show_ar_vision_debug',
+        'btn-toggle-pieces': 'show_ar_pieces',
+        'btn-toggle-warped-grid': 'show_warped_grid',
+        'btn-toggle-warped-arrow': 'show_warped_arrow'
+    };
+    window.applyVisionSettingsToUI = function(settings) {
+        if (!settings) return;
+        for (const [btnId, settingKey] of Object.entries(settingButtonMap)) {
+            const btn = document.getElementById(btnId);
+            if (btn && settings[settingKey] !== undefined) {
+                btn.classList.toggle('active', !!settings[settingKey]);
+            }
+        }
+    };
 
     const btnToggleConsole = document.getElementById('btn-toggle-console');
     if (btnToggleConsole) {
@@ -352,18 +456,31 @@ function initEventListeners() {
     setupCanvasInteraction();
 }
 
+function applyCameraSettingsToUI(settings) {
+    if (!settings) return;
+    const btnRot = document.getElementById('btn-rotate-cam');
+    if (btnRot) btnRot.classList.toggle('active', !!settings.rotate_180);
+    const btnFlip = document.getElementById('btn-flip-cam');
+    if (btnFlip) btnFlip.classList.toggle('active', !!settings.flip_h);
+}
+
 function detectCameras() {
     fetch('/api/camera/list')
         .then(r => r.json())
         .then(data => {
+            if (data.status && data.status.settings) {
+                applyCameraSettingsToUI(data.status.settings);
+            }
             const sel = document.getElementById('camera-select');
             sel.innerHTML = '';
             if (data.cameras && data.cameras.length > 0) {
+                const targetIdx = (data.status && data.status.index !== undefined && data.status.index !== null) ? data.status.index : 0;
                 data.cameras.forEach(c => {
                     const opt = document.createElement('option');
                     opt.value = c.index;
                     opt.text = c.label;
-                    if (c.active) opt.selected = true;
+                    if (c.index === targetIdx) opt.selected = true;
+                    else if (c.active && (targetIdx === null || targetIdx === undefined)) opt.selected = true;
                     sel.appendChild(opt);
                 });
             } else {
@@ -485,7 +602,12 @@ function setupDetectionConsole() {
         { id: 'cfg-max-side',  valId: 'val-max-side',  key: 'max_side_px',     unit: ' px', isFloat: false },
         { id: 'cfg-clahe-clip',valId: 'val-clahe-clip',key: 'clahe_clip',      unit: '',    isFloat: true },
         { id: 'cfg-bin-thresh',valId: 'val-bin-thresh',key: 'bin_thresh',      unit: '',    isFloat: false },
-        { id: 'cfg-border-err',valId: 'val-border-err',key: 'border_err',      unit: '',    isFloat: true }
+        { id: 'cfg-border-err',valId: 'val-border-err',key: 'border_err',      unit: '',    isFloat: true },
+        { id: 'cfg-pastille-min-area', valId: 'val-pastille-min-area', key: 'pastille_min_area', unit: ' px', isFloat: false },
+        { id: 'cfg-pastille-max-area', valId: 'val-pastille-max-area', key: 'pastille_max_area', unit: ' px', isFloat: false },
+        { id: 'cfg-pastille-min-circ', valId: 'val-pastille-min-circ', key: 'pastille_min_circ', unit: '',    isFloat: true },
+        { id: 'cfg-pastille-min-sat',  valId: 'val-pastille-min-sat',  key: 'pastille_min_sat',  unit: '',    isFloat: false },
+        { id: 'cfg-parallax-scale',    valId: 'val-parallax-scale',    key: 'parallax_scale',    unit: '',    isFloat: true }
     ];
 
     function pushConfigUpdate() {
@@ -524,9 +646,39 @@ function setupDetectionConsole() {
         });
     });
 
+    // Sélecteur de mode de détection des pièces
+    const selPieceMode = document.getElementById('cfg-piece-mode');
+    if (selPieceMode) {
+        selPieceMode.addEventListener('change', () => {
+            postJSON('/api/vision/detection-config', { piece_mode: selPieceMode.value });
+        });
+    }
+
     // Sélecteur de méthode de détection des coins (barre d'outils + console synchronisés)
     const selMethodToolbar = document.getElementById('select-det-method');
     const selMethodConsole = document.getElementById('cfg-det-method');
+
+    window.applyDetectionConfigToUI = function(cfg) {
+        if (!cfg) return;
+        sliders.forEach(s => {
+            const el = document.getElementById(s.id);
+            const valEl = document.getElementById(s.valId);
+            if (el && cfg[s.key] !== undefined) {
+                if (document.activeElement !== el) {
+                    el.value = cfg[s.key];
+                    if (valEl) valEl.innerText = `${cfg[s.key]}${s.unit}`;
+                }
+            }
+        });
+        if (cfg.detection_method) {
+            if (selMethodToolbar && document.activeElement !== selMethodToolbar) selMethodToolbar.value = cfg.detection_method;
+            if (selMethodConsole && document.activeElement !== selMethodConsole) selMethodConsole.value = cfg.detection_method;
+        }
+        if (cfg.piece_mode && selPieceMode && document.activeElement !== selPieceMode) {
+            selPieceMode.value = cfg.piece_mode;
+        }
+    };
+
     function onMethodChange(newVal) {
         if (selMethodToolbar) selMethodToolbar.value = newVal;
         if (selMethodConsole) selMethodConsole.value = newVal;
@@ -544,7 +696,7 @@ function setupDetectionConsole() {
                 const nLines = res.status && res.status.grid_refined_lines;
                 const linesDetail = (newVal === 'COUPLED' && nLines) ? ` (${nLines}/14 lignes ajustées)` : '';
                 document.getElementById('banner-action').innerText =
-                    `🎯 Méthode activée : ${labelMap[newVal] || newVal}${linesDetail}. Cliquez sur « ✨ Détection Auto » pour relancer si besoin.`;
+                    `🎯 Méthode activée : ${labelMap[newVal] || newVal}${linesDetail}. Enregistrée.`;
             }
         });
     }
@@ -554,23 +706,45 @@ function setupDetectionConsole() {
     const btnReset = document.getElementById('btn-reset-det-config');
     if (btnReset) {
         btnReset.addEventListener('click', () => {
-            const defaults = {
-                'cfg-inset-pct': 2.4,
-                'cfg-min-side': 8,
-                'cfg-max-side': 52,
-                'cfg-clahe-clip': 3.5,
-                'cfg-bin-thresh': 125,
-                'cfg-border-err': 0.85
-            };
-            sliders.forEach(s => {
-                const el = document.getElementById(s.id);
-                const valEl = document.getElementById(s.valId);
-                if (el && defaults[s.id] !== undefined) {
-                    el.value = defaults[s.id];
-                    valEl.innerText = `${defaults[s.id]}${s.unit}`;
+            postJSON('/api/vision/detection-config/reset', {}).then(res => {
+                if (res && res.success) {
+                    if (res.config && window.applyDetectionConfigToUI) {
+                        window.applyDetectionConfigToUI(res.config);
+                    }
+                    if (res.corners) {
+                        currentCornersNorm = res.corners;
+                        drawOverlay();
+                    }
+                    if (res.detected_aruco_ids) {
+                        updateArucoBadge(res.detected_aruco_ids);
+                    }
+                    document.getElementById('banner-action').innerText =
+                        '↺ Paramètres réinitialisés aux valeurs par défaut d\'usine et enregistrés.';
                 }
             });
-            pushConfigUpdate();
+        });
+    }
+
+    const btnCalibPieces = document.getElementById('btn-auto-calib-pieces');
+    if (btnCalibPieces) {
+        btnCalibPieces.addEventListener('click', () => {
+            btnCalibPieces.disabled = true;
+            btnCalibPieces.innerText = '⏳ Analyse départ...';
+            document.getElementById('banner-action').innerText =
+                '🎯 Analyse des 4 rangées de départ (Vert, Rouge, Violet, Bleu) et des cases vides...';
+            postJSON('/api/vision/auto-calibrate-pieces', {}).then(res => {
+                btnCalibPieces.disabled = false;
+                btnCalibPieces.innerText = '🎯 Calibrer Couleurs Départ';
+                if (res && res.success) {
+                    document.getElementById('banner-action').innerText = `✅ ${res.message}`;
+                    if (res.summary && res.summary.total_pastilles_found !== undefined) {
+                        const pBadge = document.getElementById('pastille-count-badge');
+                        if (pBadge) pBadge.innerText = `Pastilles: ${res.summary.total_pastilles_found}/32`;
+                    }
+                } else {
+                    document.getElementById('banner-action').innerText = `⚠️ ${res.error || 'Erreur calibration pièces'}`;
+                }
+            });
         });
     }
 }
@@ -578,7 +752,7 @@ function setupDetectionConsole() {
 function autoCalibrate() {
     const btn = document.getElementById('btn-auto-calib');
     const banner = document.getElementById('banner-action');
-    const originalText = '✨ Détection Auto (ArUco / Grille)';
+    const originalText = '🎯 Détection';
     
     btn.disabled = true;
     btn.innerText = '⏳ Analyse ArUco & Grille...';
@@ -617,6 +791,25 @@ function fetchVisionStatus() {
             if (data.detected_aruco_ids) {
                 updateArucoBadge(data.detected_aruco_ids);
             }
+            if (data.pastilles_detected_count !== undefined) {
+                const pBadge = document.getElementById('pastille-count-badge');
+                if (pBadge) {
+                    pBadge.innerText = `Pastilles: ${data.pastilles_detected_count}/32`;
+                    pBadge.className = data.pastilles_detected_count >= 16 ? 'badge badge-online' : 'badge';
+                }
+            }
+            if (data.continuous_detection !== undefined) {
+                const chk = document.getElementById('chk-continuous-calib');
+                if (chk && document.activeElement !== chk) {
+                    chk.checked = !!data.continuous_detection;
+                }
+            }
+            if (data.detection_config && window.applyDetectionConfigToUI) {
+                window.applyDetectionConfigToUI(data.detection_config);
+            }
+            if (data.settings && window.applyVisionSettingsToUI) {
+                window.applyVisionSettingsToUI(data.settings);
+            }
         });
 }
 
@@ -630,26 +823,268 @@ function pollGameStatus() {
     if (cameraConnected) {
         fetch('/api/camera/status').then(r => r.json()).then(data => {
             document.getElementById('fps-counter').innerText = `${data.fps} FPS`;
+            if (data.settings) applyCameraSettingsToUI(data.settings);
         });
         fetchVisionStatus();
     }
     fetchGameStatus();
 }
 
+function updateCheckAlertBanner(g) {
+    const banner = document.getElementById('check-alert-banner');
+    const icon = document.getElementById('check-banner-icon');
+    const title = document.getElementById('check-banner-title');
+    const subtitle = document.getElementById('check-banner-subtitle');
+    if (!banner || !icon || !title || !subtitle) return;
+
+    if (g.is_checkmate) {
+        banner.style.display = 'block';
+        banner.className = 'check-banner banner-mat';
+        icon.innerText = '👑';
+        const winnerName = g.winner === 'white' ? 'BLANCS' : (g.winner === 'black' ? 'NOIRS' : 'NULLE');
+        const loserName = g.winner === 'white' ? 'Noirs' : 'Blancs';
+        title.innerText = `ÉCHEC ET MAT ! LES ${winnerName} GAGNENT ! 🏆`;
+        subtitle.innerText = `Le Roi des ${loserName} est mat. Fin de la partie physique & numérique.`;
+    } else if (g.is_check) {
+        banner.style.display = 'block';
+        banner.className = 'check-banner banner-check';
+        icon.innerText = '⚠️';
+        const kingColor = g.turn === 'white' ? 'Blancs' : 'Noirs';
+        title.innerText = `ÉCHEC AU ROI (${kingColor.toUpperCase()}) !`;
+        subtitle.innerText = `Le Roi des ${kingColor} est attaqué ! Vous devez parer l'échec.`;
+    } else {
+        banner.style.display = 'none';
+    }
+}
+
+let historyNavInitialized = false;
+
+function updateHistoryNavButtons() {
+    const btnStart = document.getElementById('btn-hist-start');
+    const btnPrev = document.getElementById('btn-hist-prev');
+    const btnNext = document.getElementById('btn-hist-next');
+    const btnEnd = document.getElementById('btn-hist-end');
+    const statusLabel = document.getElementById('hist-status-label');
+    const liveDot = document.querySelector('.live-dot');
+
+    const totalMoves = gameMoveHistory.length;
+    const isLive = (browsingMoveIndex === null);
+
+    if (btnStart) btnStart.disabled = (totalMoves === 0 || browsingMoveIndex === 0);
+    if (btnPrev) btnPrev.disabled = (totalMoves === 0 || browsingMoveIndex === 0);
+    if (btnNext) btnNext.disabled = (totalMoves === 0 || isLive);
+    if (btnEnd) {
+        btnEnd.disabled = (totalMoves === 0 || isLive);
+        if (isLive) {
+            btnEnd.classList.add('is-live');
+        } else {
+            btnEnd.classList.remove('is-live');
+        }
+    }
+
+    if (statusLabel) {
+        if (isLive) {
+            statusLabel.innerText = "En Direct (Live)";
+            statusLabel.style.color = "#38bdf8";
+        } else if (browsingMoveIndex === 0) {
+            statusLabel.innerText = "Position initiale (Départ)";
+            statusLabel.style.color = "#f59e0b";
+        } else {
+            const m = gameMoveHistory[browsingMoveIndex - 1];
+            statusLabel.innerText = `Coup ${browsingMoveIndex}/${totalMoves} (${m ? m.san : ''})`;
+            statusLabel.style.color = "#f59e0b";
+        }
+    }
+
+    if (liveDot) {
+        if (isLive) {
+            liveDot.classList.remove('hist-mode');
+        } else {
+            liveDot.classList.add('hist-mode');
+        }
+    }
+
+    // Mettre à jour la surbrillance dans l'historique PGN
+    document.querySelectorAll('.move-item').forEach(el => {
+        const idx = parseInt(el.dataset.moveIdx);
+        if (idx === browsingMoveIndex) {
+            el.classList.add('active-move');
+        } else {
+            el.classList.remove('active-move');
+        }
+    });
+}
+
+function displayBrowsedMove(index) {
+    const total = gameMoveHistory.length;
+    if (total === 0 && index !== 0) return;
+    browsingMoveIndex = Math.max(0, Math.min(index, total));
+
+    if (browsingMoveIndex === 0) {
+        // Position initiale : jamais d'échec ni mat
+        updateDigitalBoard(initialGameFen, null, null);
+        updateCheckAlertBanner({ is_check: false, is_checkmate: false });
+    } else {
+        const moveEntry = gameMoveHistory[browsingMoveIndex - 1];
+        if (moveEntry) {
+            const isMat = !!(moveEntry.is_checkmate || (moveEntry.san && moveEntry.san.includes('#')));
+            const isChk = isMat || !!(moveEntry.is_check || (moveEntry.san && moveEntry.san.includes('+')));
+            const turn = moveEntry.turn || (moveEntry.fen ? (moveEntry.fen.split(' ')[1] === 'w' ? 'white' : 'black') : 'white');
+            let winner = moveEntry.winner || null;
+            if (isMat && !winner) {
+                // Le joueur qui a joué le coup fatal gagne
+                winner = (turn === 'white') ? 'black' : 'white';
+            }
+
+            const checkInfo = {
+                is_check: isChk,
+                is_checkmate: isMat,
+                turn: turn,
+                winner: winner,
+                check_square: moveEntry.check_square || null
+            };
+
+            // Échiquier 2D avec coloration orange (échec) ou rouge (mat) seulement si le roi l'est à ce coup
+            updateDigitalBoard(moveEntry.fen, moveEntry.uci, {
+                isCheck: isChk,
+                isCheckmate: isMat,
+                checkSquare: moveEntry.check_square || null,
+                turn: turn
+            });
+
+            // Message d'alerte synchronisé avec le coup du passé
+            updateCheckAlertBanner(checkInfo);
+        }
+    }
+
+    updateHistoryNavButtons();
+}
+
+function goLive() {
+    browsingMoveIndex = null;
+    if (liveGameStatus) {
+        updateGameUI({ game: liveGameStatus });
+    }
+    updateHistoryNavButtons();
+}
+
+function initHistoryNavControls() {
+    if (historyNavInitialized) return;
+    historyNavInitialized = true;
+
+    const btnStart = document.getElementById('btn-hist-start');
+    const btnPrev = document.getElementById('btn-hist-prev');
+    const btnNext = document.getElementById('btn-hist-next');
+    const btnEnd = document.getElementById('btn-hist-end');
+
+    if (btnStart) {
+        btnStart.addEventListener('click', (e) => {
+            e.preventDefault();
+            displayBrowsedMove(0);
+        });
+    }
+
+    if (btnPrev) {
+        btnPrev.addEventListener('click', (e) => {
+            e.preventDefault();
+            const total = gameMoveHistory.length;
+            if (total === 0) return;
+            const current = (browsingMoveIndex === null) ? total : browsingMoveIndex;
+            if (current > 0) {
+                displayBrowsedMove(current - 1);
+            }
+        });
+    }
+
+    if (btnNext) {
+        btnNext.addEventListener('click', (e) => {
+            e.preventDefault();
+            if (browsingMoveIndex === null) return;
+            const total = gameMoveHistory.length;
+            if (browsingMoveIndex >= total) {
+                goLive();
+            } else if (browsingMoveIndex === total - 1) {
+                displayBrowsedMove(total);
+            } else {
+                displayBrowsedMove(browsingMoveIndex + 1);
+            }
+        });
+    }
+
+    if (btnEnd) {
+        btnEnd.addEventListener('click', (e) => {
+            e.preventDefault();
+            goLive();
+        });
+    }
+
+    // Navigation clavier ergonomique : Flèches Gauche/Droite
+    document.addEventListener('keydown', (e) => {
+        if (['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement.tagName)) return;
+        if (e.key === 'ArrowLeft') {
+            e.preventDefault();
+            const total = gameMoveHistory.length;
+            if (total === 0) return;
+            const current = (browsingMoveIndex === null) ? total : browsingMoveIndex;
+            if (current > 0) {
+                displayBrowsedMove(current - 1);
+            }
+        } else if (e.key === 'ArrowRight') {
+            e.preventDefault();
+            if (browsingMoveIndex === null) return;
+            const total = gameMoveHistory.length;
+            if (browsingMoveIndex >= total) {
+                goLive();
+            } else if (browsingMoveIndex === total - 1) {
+                displayBrowsedMove(total);
+            } else {
+                displayBrowsedMove(browsingMoveIndex + 1);
+            }
+        } else if (e.key === 'Home') {
+            e.preventDefault();
+            displayBrowsedMove(0);
+        } else if (e.key === 'End') {
+            e.preventDefault();
+            goLive();
+        }
+    });
+}
+
 function updateGameUI(data) {
     if (!data || !data.game) return;
-    // Correction de position en cours (position_editor.js) : ne pas écraser le plateau ni le bandeau
     if (typeof isPositionEditing === 'function' && isPositionEditing()) return;
     const g = data.game;
+    liveGameStatus = g;
+    gameMoveHistory = g.history || [];
+    if (g.initial_fen) initialGameFen = g.initial_fen;
+
     currentPendingBotMove = g.pending_bot_move;
     currentArrow = g.arrow || null;
-    updateDigitalBoard(g.fen, g.last_move);
+
+    // Alerte bannière Échec & Échiquier : mis à jour SEULEMENT si on est en direct (Live)
+    // pour ne pas écraser l'affichage du coup que l'utilisateur est en train d'examiner
+    if (browsingMoveIndex === null) {
+        updateCheckAlertBanner(g);
+        updateDigitalBoard(g.fen, g.last_move, {
+            isCheck: g.is_check,
+            isCheckmate: g.is_checkmate,
+            checkSquare: g.check_square,
+            turn: g.turn
+        });
+    }
 
     const turnBadge = document.getElementById('turn-badge');
     const banner = document.getElementById('banner-action');
 
     turnBadge.innerText = g.state;
-    if (g.ambiguity) {
+    if (g.is_checkmate) {
+        turnBadge.className = 'badge badge-offline';
+        const win = g.winner === 'white' ? 'Blancs' : 'Noirs';
+        banner.innerText = `👑 Échec et Mat ! Victoire des ${win} ! Partie terminée.`;
+    } else if (g.is_check) {
+        turnBadge.className = 'badge badge-online';
+        banner.innerText = `⚠️ Échec au Roi (${g.turn === 'white' ? 'Blancs' : 'Noirs'}) ! Déplacez votre Roi ou parez l'échec.`;
+    } else if (g.ambiguity) {
         banner.innerText = `❓ La caméra hésite entre : ${g.ambiguity}. Placez la bonne position via « ✏️ Corriger la position ».`;
     } else if (g.vision_hint) {
         banner.innerText = `⏸️ Coup non validé : ${g.vision_hint}.`;
@@ -665,7 +1100,6 @@ function updateGameUI(data) {
 
     const btnConfirmSetup = document.getElementById('btn-confirm-setup');
     if (btnConfirmSetup) {
-        // Le bouton n'est actif que lors de la phase initiale d'installation (SETUP_CHECK ou IDLE sans coups joués)
         const canConfirm = (g.state === 'SETUP_CHECK' || g.state === 'IDLE') && (!g.history || g.history.length === 0);
         btnConfirmSetup.disabled = !canConfirm;
         btnConfirmSetup.title = canConfirm 
@@ -673,11 +1107,21 @@ function updateGameUI(data) {
             : "Partie en cours : utilisez « 📸 Resync (J'adoube) » ou « ✏️ Corriger la position »";
     }
 
-    // Historique
-    if (g.history && g.history.length > 0) {
-        const historyBox = document.getElementById('move-history-box');
-        historyBox.innerHTML = g.history.map(m => `<span>#${m.num} <b>${m.san}</b> (${m.player})</span>`).join(' • ');
+    // Historique PGN cliquable
+    const historyBox = document.getElementById('move-history-box');
+    if (historyBox) {
+        if (gameMoveHistory.length > 0) {
+            historyBox.innerHTML = gameMoveHistory.map((m, idx) => {
+                const moveNum = (idx + 1);
+                const isActive = (browsingMoveIndex === moveNum) ? 'active-move' : '';
+                return `<span class="move-item ${isActive}" data-move-idx="${moveNum}" onclick="displayBrowsedMove(${moveNum})">#${m.num} <b>${m.san}</b> (${m.player})</span>`;
+            }).join(' • ');
+        } else {
+            historyBox.innerHTML = '<em>Historique des coups PGN vide</em>';
+        }
     }
+
+    updateHistoryNavButtons();
 }
 
 function pollLogs() {
@@ -996,4 +1440,159 @@ function postJSON(url, data) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
     }).then(r => r.json());
+}
+
+
+// --- Gestionnaire d'Archives et de Parties Sauvegardées ---
+function initSavedGamesControls() {
+    const btnOpen = document.getElementById('btn-open-saved-games');
+    const btnClose = document.getElementById('btn-close-saved-modal');
+    const modal = document.getElementById('modal-saved-games');
+    const btnRefresh = document.getElementById('btn-refresh-saved-list');
+    const btnSaveCheckpoint = document.getElementById('btn-save-current-checkpoint');
+
+    if (btnOpen) {
+        btnOpen.addEventListener('click', () => {
+            openSavedGamesModal();
+        });
+    }
+
+    if (btnClose && modal) {
+        btnClose.addEventListener('click', () => {
+            modal.style.display = 'none';
+        });
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) modal.style.display = 'none';
+        });
+    }
+
+    if (btnRefresh) {
+        btnRefresh.addEventListener('click', () => {
+            fetchSavedGamesList();
+        });
+    }
+
+    if (btnSaveCheckpoint) {
+        btnSaveCheckpoint.addEventListener('click', () => {
+            saveCurrentGameCheckpoint();
+        });
+    }
+}
+
+function openSavedGamesModal() {
+    const modal = document.getElementById('modal-saved-games');
+    if (!modal) return;
+    modal.style.display = 'flex';
+    fetchSavedGamesList();
+}
+
+function fetchSavedGamesList() {
+    const container = document.getElementById('saved-games-list');
+    if (!container) return;
+    container.innerHTML = '<div style="text-align: center; color: #94a3b8; padding: 20px;">Chargement des parties sauvegardées...</div>';
+
+    fetch('/api/game/saved')
+        .then(r => r.json())
+        .then(data => {
+            if (!data.success || !data.games || data.games.length === 0) {
+                container.innerHTML = '<div style="text-align: center; color: #94a3b8; padding: 30px;">Aucune partie archivée pour le moment.<br><small>Toute partie jouée est automatiquement sauvegardée ici !</small></div>';
+                return;
+            }
+
+            container.innerHTML = data.games.map(g => {
+                const movesStr = (g.preview_moves && g.preview_moves.length > 0)
+                    ? `Derniers coups : ${g.preview_moves.join(' ')}`
+                    : 'Aucun coup joué';
+                const isCurrent = (liveGameStatus && liveGameStatus.game_id === g.game_id);
+                const currentBadge = isCurrent ? '<span class="badge badge-online" style="font-size: 0.7rem; margin-left: 6px;">Active</span>' : '';
+
+                return `
+                <div class="saved-game-card">
+                    <div class="saved-game-info">
+                        <div class="saved-game-title">
+                            📅 ${g.date_str} ${currentBadge}
+                        </div>
+                        <div class="saved-game-meta">
+                            ♟️ <b>${g.moves_count} coups</b> • État : ${g.state || 'En cours'}
+                        </div>
+                        <div class="saved-game-preview" title="${movesStr}">
+                            ${movesStr}
+                        </div>
+                    </div>
+                    <div class="saved-game-actions">
+                        <button class="btn btn-sm btn-primary" onclick="loadSavedGameById('${g.game_id}')" title="Restaurer cette position sur le plateau">🔄 Charger</button>
+                        <a href="/api/game/saved/export-pgn?game_id=${g.game_id}" class="btn btn-sm" download="${g.game_id}.pgn" title="Télécharger le fichier PGN">⬇ PGN</a>
+                        <button class="btn btn-sm" style="color: #ef4444; border-color: rgba(239, 68, 68, 0.4);" onclick="deleteSavedGameById('${g.game_id}')" title="Supprimer de l'archive">🗑️</button>
+                    </div>
+                </div>
+                `;
+            }).join('');
+        })
+        .catch(err => {
+            container.innerHTML = `<div style="text-align: center; color: #ef4444; padding: 20px;">Erreur lors du chargement : ${err.message}</div>`;
+        });
+}
+
+function loadSavedGameById(gameId) {
+    if (!confirm(`Voulez-vous restaurer la partie archivée (${gameId}) ?\nL'échiquier numérique et l'IA se caleront immédiatement dessus.`)) {
+        return;
+    }
+
+    fetch('/api/game/saved/load', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ game_id: gameId })
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            alert('✅ Partie restaurée avec succès !');
+            const modal = document.getElementById('modal-saved-games');
+            if (modal) modal.style.display = 'none';
+            goLive();
+            fetchGameStatus();
+        } else {
+            alert(`❌ Erreur : ${data.message || 'Impossible de restaurer la partie'}`);
+        }
+    })
+    .catch(err => {
+        alert(`❌ Erreur de communication : ${err.message}`);
+    });
+}
+
+function deleteSavedGameById(gameId) {
+    if (!confirm(`Supprimer définitivement la sauvegarde ${gameId} ?`)) {
+        return;
+    }
+
+    fetch('/api/game/saved/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ game_id: gameId })
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            fetchSavedGamesList();
+        } else {
+            alert(`❌ Erreur : ${data.message}`);
+        }
+    });
+}
+
+function saveCurrentGameCheckpoint() {
+    fetch('/api/game/saved/save-checkpoint', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            alert('💾 Partie en cours archivée avec succès !');
+            fetchSavedGamesList();
+        } else {
+            alert('❌ Erreur lors de la sauvegarde');
+        }
+    });
 }

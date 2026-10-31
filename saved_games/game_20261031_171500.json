@@ -1,0 +1,94 @@
+{
+  "fen": "q3kb1r/p1p1pppp/3p1B2/8/3N4/2N5/PPQ2PPP/R4RK1 b k - 0 13",
+  "state": "WAIT_BOT_THINKING",
+  "last_move": "d1c2",
+  "move_history": [
+    {
+      "fen": "q3kb1r/p1pbpppp/3p1n2/8/4P3/2N5/PPP2PPP/R1BQK1NR w KQk - 0 9",
+      "num": 16,
+      "player": "bot",
+      "san": "Qxa8",
+      "uci": "d8a8"
+    },
+    {
+      "fen": "q3kb1r/p1pbpppp/3p1n2/8/4P3/2N2N2/PPP2PPP/R1BQK2R b KQk - 1 9",
+      "num": 17,
+      "player": "human",
+      "san": "Nf3",
+      "uci": "g1f3"
+    },
+    {
+      "fen": "q3kb1r/p1p1pppp/2bp1n2/8/4P3/2N2N2/PPP2PPP/R1BQK2R w KQk - 2 10",
+      "num": 18,
+      "player": "bot",
+      "san": "Bc6",
+      "uci": "d7c6"
+    },
+    {
+      "fen": "q3kb1r/p1p1pppp/2bp1n2/8/4P3/2N2N2/PPP2PPP/R1BQ1RK1 b k - 3 10",
+      "num": 19,
+      "player": "human",
+      "san": "O-O",
+      "uci": "e1g1"
+    },
+    {
+      "fen": "q3kb1r/p1p1pppp/2bp1n2/8/3NP3/2N5/PPP2PPP/R1BQ1RK1 b k - 0 10",
+      "num": "✏️",
+      "player": "manuel",
+      "san": "Position corrigée",
+      "uci": ""
+    },
+    {
+      "fen": "q3kb1r/pbp1pppp/3p1n2/8/3NP3/2N5/PPP2PPP/R1BQ1RK1 w k - 1 11",
+      "num": 1,
+      "player": "bot",
+      "san": "Bb7",
+      "uci": "c6b7"
+    },
+    {
+      "fen": "q3kb1r/pbp1pppp/3p1n2/6B1/3NP3/2N5/PPP2PPP/R2Q1RK1 b k - 2 11",
+      "num": 2,
+      "player": "human",
+      "san": "Bg5",
+      "uci": "c1g5"
+    },
+    {
+      "fen": "q3kb1r/p1p1pppp/3p1n2/6B1/3Nb3/2N5/PPP2PPP/R2Q1RK1 w k - 0 12",
+      "num": 3,
+      "player": "bot",
+      "san": "Bxe4",
+      "uci": "b7e4"
+    },
+    {
+      "fen": "q3kb1r/p1p1pppp/3p1B2/8/3Nb3/2N5/PPP2PPP/R2Q1RK1 b k - 0 12",
+      "num": 4,
+      "player": "human",
+      "san": "Bxf6",
+      "uci": "g5f6"
+    },
+    {
+      "fen": "q3kb1r/p1p1pppp/3p1B2/8/3N4/2N5/PPb2PPP/R2Q1RK1 w k - 0 13",
+      "num": 5,
+      "player": "bot",
+      "san": "Bxc2",
+      "uci": "e4c2"
+    },
+    {
+      "num": 6,
+      "player": "human",
+      "san": "Qxc2",
+      "uci": "d1c2",
+      "fen": "q3kb1r/p1p1pppp/3p1B2/8/3N4/2N5/PPQ2PPP/R4RK1 b k - 0 13",
+      "turn": "black",
+      "is_check": false,
+      "is_checkmate": false,
+      "check_square": null,
+      "winner": null
+    }
+  ],
+  "engine_mode": "HUMAN_VS_BOT",
+  "human_color": 1,
+  "bot_elo": 1200,
+  "initial_fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+  "saved_at": 1793462000.0
+}

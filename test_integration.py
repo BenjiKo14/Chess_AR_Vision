@@ -24,10 +24,13 @@ class TestIntegrationSlices1To4(unittest.TestCase):
         # Initialisation avec les loggers par défaut pour vérifier l'absence d'UnicodeEncodeError
         self.vision = ChessVisionManager(calibration_file="test_board_calib.json")
         self.engine = ChessEngineManager()
-        self.game = ChessGameManager(self.vision, self.engine)
+        self.game = ChessGameManager(self.vision, self.engine, save_path="test_game_state_tmp.json")
         self.robot = RobotChessBridge(square_size_mm=45.0)
 
     def tearDown(self):
+        import os
+        if os.path.exists("test_game_state_tmp.json"):
+            os.remove("test_game_state_tmp.json")
         calib_file = "test_board_calib.json"
         if os.path.exists(calib_file):
             try:

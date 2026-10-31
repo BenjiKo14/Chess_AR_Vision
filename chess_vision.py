@@ -6,6 +6,8 @@ import threading
 from pathlib import Path
 import cv2
 import numpy as np
+import chess
+from pastille_detector import detect_pastilles_by_square, detect_pastille_blobs, PASTILLE_PAD
 
 import hough_board
 
@@ -27,6 +29,36 @@ def safe_log_print(msg):
 
 WARP_SIZE = 512
 SQUARE_SIZE = WARP_SIZE // 8  # 64 px
+
+DEFAULT_DETECTION_CONFIG = {
+    "min_side_px": 8,
+    "max_side_px": 52,
+    "clahe_clip": 3.5,
+    "bin_thresh": 125,
+    "border_err": 0.85,
+    "err_corr": 0.85,
+    "aruco_inset_pct": 2.4,  # Retrait automatique (%) des marqueurs vers les coins du damier 8x8
+    "use_hough_refine": True, # Couplage avec la transformée de Hough pour calage subpixel sur les lignes de cases
+    "detection_method": "COUPLED", # 'ARUCO', 'HOUGH', 'COUPLED'
+    "grid_max_shift": 8,
+    "piece_mode": "PASTILLES_STRICT", # 'PASTILLES_STRICT' (recommandé), 'HYBRID'
+    "pastille_min_area": 45,
+    "pastille_max_area": 320,
+    "pastille_min_circ": 0.52,
+    "pastille_min_sat": 40,
+    "parallax_scale": 1.0,
+}
+
+DEFAULT_SETTINGS = {
+    "show_ar_grid": True,
+    "show_ar_labels": True,
+    "show_ar_arrow": True,
+    "show_ar_vision_debug": False,
+    "show_ar_pieces": False,
+    "show_warped_grid": True,
+    "show_warped_arrow": True,
+    "show_aruco_debug": True,
+}
 
 class ChessVisionManager:
     """
@@ -50,7 +82,6 @@ class ChessVisionManager:
         # Incrémenté à chaque changement de géométrie ou d'image (coins, quadrillage, caméra) :
         # une image de référence prise avant n'est plus comparable case par case.
         self.geometry_version = 0
-        self._load_calibration()
 
         # Cache homographie
         self.last_frame_shape = None
@@ -73,8 +104,14 @@ class ChessVisionManager:
         self.show_warped_arrow = True  # Flèche sur la vue plateau redressée 512x512
         self.show_aruco_debug = True  # Affiche les carrés ArUco détectés avec leur contour vert et leur ID
         self.last_detected_markers = {}  # Stocke id -> np.array (4x2)
-        self.last_aruco_centers_norm = None  # Stocke les 4 centres bruts des marqueurs pour ajuster l'inset en direct
+        self.last_aruco_centers_norm = None
+        self.last_detected_pastilles = {}   # sq -> PastilleDetection
+        self.continuous_detection = False
+        self.last_continuous_detection_time = 0.0  # Stocke les 4 centres bruts des marqueurs pour ajuster l'inset en direct
         self.last_detected_pieces = None    # Stocke les probabilités de présence par case [P_vide, P_blanc, P_noir]
+        self.current_game_board = None      # Instance de chess.Board du jeu en cours (référence de vérité)
+        self._ar_piece_tracker = {}         # sq -> dict de suivi AR avec debounce, ttl et lissage sub-pixel
+        self._ar_frame_count = 0            # Compteur de frames traitées
         # Lignes directrices exactes détectées par Hough (9 lignes horizontales et 9 lignes verticales dans 512x512)
         # Quadrillage interne affiné (lignes internes calées sur les vraies séparations ; contour jamais modifié)
         self.refined_grid = None
@@ -84,18 +121,8 @@ class ChessVisionManager:
             'cols': [float(j * SQUARE_SIZE) for j in range(9)]
         }
 
-        # Console de configuration des paramètres de détection (réglables depuis l'UI Web)
-        self.detection_config = {
-            "min_side_px": 8,
-            "max_side_px": 52,
-            "clahe_clip": 3.5,
-            "bin_thresh": 125,
-            "border_err": 0.85,
-            "err_corr": 0.85,
-            "aruco_inset_pct": 2.4,  # Retrait automatique (%) des marqueurs vers les coins du damier 8x8
-            "use_hough_refine": True, # Couplage avec la transformée de Hough pour calage subpixel sur les lignes de cases
-            "detection_method": "COUPLED", # 'ARUCO', 'HOUGH', 'COUPLED'
-        }
+        # Console de configuration des paramètres de détection (réglables depuis l'UI Web, avec persistance)
+        self.detection_config = DEFAULT_DETECTION_CONFIG.copy()
 
         # Stabilité et mouvement (MotionGate)
         self.is_board_stable = True
@@ -132,6 +159,9 @@ class ChessVisionManager:
         self.setup_mode = False          # Calque guide départ
         self.top_diff_info = ""
 
+        # Chargement de la calibration et des configurations personnalisées
+        self._load_calibration()
+
     def log(self, msg):
         try:
             if self.log_fn:
@@ -151,7 +181,22 @@ class ChessVisionManager:
                     if 'corners' in data and len(data['corners']) == 4:
                         self.corners_norm = data['corners']
                         self.is_calibrated = True
-                        self.log("✅ Calibration plateau chargée depuis board_calibration.json")
+                    # Restauration de la configuration de détection personnalisée
+                    if 'detection_config' in data and isinstance(data['detection_config'], dict):
+                        for k, v in data['detection_config'].items():
+                            if k in self.detection_config:
+                                self.detection_config[k] = v
+                    # Restauration des options d'overlay utilisateur
+                    if 'settings' in data and isinstance(data['settings'], dict):
+                        s = data['settings']
+                        for k in ('show_ar_grid', 'show_ar_labels', 'show_ar_arrow', 'show_ar_vision_debug',
+                                  'show_ar_pieces', 'show_warped_grid', 'show_warped_arrow', 'show_aruco_debug'):
+                            if k in s:
+                                setattr(self, k, bool(s[k]))
+                    # Restauration de l'état de détection continue
+                    if 'continuous_detection' in data:
+                        self.continuous_detection = bool(data['continuous_detection'])
+                    self.log("✅ Configuration et calibration plateau chargées depuis board_calibration.json")
         except Exception as e:
             self.log(f"⚠️ Erreur chargement calibration: {e}")
 
@@ -161,17 +206,46 @@ class ChessVisionManager:
                 json.dump({
                     'corners': self.corners_norm,
                     'is_calibrated': self.is_calibrated,
+                    'detection_config': self.detection_config,
+                    'settings': {
+                        'show_ar_grid': self.show_ar_grid,
+                        'show_ar_labels': self.show_ar_labels,
+                        'show_ar_arrow': self.show_ar_arrow,
+                        'show_ar_vision_debug': self.show_ar_vision_debug,
+                        'show_ar_pieces': self.show_ar_pieces,
+                        'show_warped_grid': self.show_warped_grid,
+                        'show_warped_arrow': self.show_warped_arrow,
+                        'show_aruco_debug': self.show_aruco_debug
+                    },
+                    'continuous_detection': self.continuous_detection,
                     'updated_at': time.time()
                 }, f, indent=2)
-            self.log("💾 Calibration sauvegardée.")
+            self.log("💾 Configuration et calibration sauvegardées.")
         except Exception as e:
             self.log(f"❌ Erreur sauvegarde calibration: {e}")
 
-    def set_corners(self, corners):
+    def set_corners(self, corners, force=False):
         """Met à jour les 4 coins normalisés [[x0,y0], ... [x3,y3]]."""
         with self._lock:
             if len(corners) == 4:
-                self.corners_norm = [[float(p[0]), float(p[1])] for p in corners]
+                new_corners = [[float(p[0]), float(p[1])] for p in corners]
+                # Si déjà calibré, vérifier si le déplacement est significatif (> ~5-6 pixels)
+                if not force and self.is_calibrated and self.corners_norm and len(self.corners_norm) == 4:
+                    shifts = [
+                        np.hypot(n[0] - o[0], n[1] - o[1])
+                        for n, o in zip(new_corners, self.corners_norm)
+                    ]
+                    max_shift = max(shifts)
+                    # Déplacement infime (bruit de caméra) : on ne perturbe pas la partie ni la référence
+                    if max_shift < 0.008:
+                        # Lissage exponentiel doux sans toucher à geometry_version ni au disque
+                        self.corners_norm = [
+                            [0.95 * o[0] + 0.05 * n[0], 0.95 * o[1] + 0.05 * n[1]]
+                            for n, o in zip(new_corners, self.corners_norm)
+                        ]
+                        return False
+
+                self.corners_norm = new_corners
                 self.is_calibrated = True
                 self.last_frame_shape = None
                 self.refined_grid = None  # le quadrillage affiné dépend du contour : à recalculer
@@ -219,6 +293,13 @@ class ChessVisionManager:
 
         self.H = cv2.getPerspectiveTransform(src_pts, dst_pts)
         self.H_inv = cv2.getPerspectiveTransform(dst_pts, src_pts)
+        dst_pad = np.float32([
+            [PASTILLE_PAD, PASTILLE_PAD],
+            [WARP_SIZE + PASTILLE_PAD, PASTILLE_PAD],
+            [WARP_SIZE + PASTILLE_PAD, WARP_SIZE + PASTILLE_PAD],
+            [PASTILLE_PAD, WARP_SIZE + PASTILLE_PAD]
+        ])
+        self.H_pad = cv2.getPerspectiveTransform(src_pts, dst_pad)
         self.last_frame_shape = shape
 
     def warped_points_to_camera(self, pts_2d):
@@ -433,8 +514,23 @@ class ChessVisionManager:
             self.refined_grid_count = 0
             self.geometry_version += 1
 
+    def reset_detection_config_to_defaults(self, raw_frame=None):
+        """Réinitialise la console de détection aux valeurs par défaut d'usine, sauvegarde et applique."""
+        with self._lock:
+            self.detection_config = DEFAULT_DETECTION_CONFIG.copy()
+            if self.last_aruco_centers_norm and len(self.last_aruco_centers_norm) == 4:
+                self.set_corners(self._apply_inset_to_centers(self.last_aruco_centers_norm))
+            self.save_calibration()
+
+        if raw_frame is not None:
+            self.auto_detect_board(raw_frame)
+        return self.detection_config
+
     def update_detection_config(self, new_cfg, raw_frame=None):
-        """Met à jour les paramètres de la console de détection et recalcule les coins si nécessaire."""
+        """Met à jour les paramètres de la console de détection, les persiste sur disque et recalcule si nécessaire."""
+        if new_cfg.get("reset_to_default"):
+            return self.reset_detection_config_to_defaults(raw_frame=raw_frame)
+
         with self._lock:
             for k in ("min_side_px", "max_side_px", "clahe_clip", "bin_thresh", "border_err", "err_corr", "aruco_inset_pct", "grid_max_shift"):
                 if k in new_cfg and new_cfg[k] is not None:
@@ -452,6 +548,9 @@ class ChessVisionManager:
             if "aruco_inset_pct" in new_cfg and self.last_aruco_centers_norm and len(self.last_aruco_centers_norm) == 4:
                 self.set_corners(self._apply_inset_to_centers(self.last_aruco_centers_norm))
 
+            # Sauvegarde persistante de la nouvelle configuration
+            self.save_calibration()
+
         if raw_frame is not None and any(k in new_cfg for k in ("min_side_px", "max_side_px", "clahe_clip", "bin_thresh", "border_err", "err_corr", "detection_method")):
             self.auto_detect_board(raw_frame)
         elif raw_frame is not None and self.detection_config.get("use_hough_refine", True):
@@ -464,10 +563,10 @@ class ChessVisionManager:
 
     def detect_aruco_corners(self, frame):
         """
-        Détecte les 4 marqueurs aux coins avec un pipeline 3 passes haute sensibilité :
-        - Passe 1 : ArUco multi-échelle (x1.0 à x2.5) sur Gris & CLAHE (haute confiance)
-        - Passe 2 : ArUco multi-échelle sur CLAHE + Binaire avec tolérance de bordure coupée
-        - Passe 3 : Détecteur direct de petit carré noir à cœur blanc (CLAHE + Binaire) pour les marqueurs très petits (~10-15 px)
+        Détecte les 4 marqueurs aux coins en temps réel (< 50 ms) :
+        - Détection directe sur image native (Gris + CLAHE léger)
+        - Complétion géométrique projective instantanée si 3 marqueurs sur 4 sont vus (ex: pièce posée sur un marqueur)
+        - Vérification de cohérence géométrique (convexité et ratios)
         """
         if frame is None:
             return False, None, "Pas d'image reçue"
@@ -478,129 +577,113 @@ class ChessVisionManager:
 
         cfg = self.detection_config
         min_side = float(cfg.get("min_side_px", 8))
-        max_side = float(cfg.get("max_side_px", 52))
-        clahe_clip = float(cfg.get("clahe_clip", 3.5))
-        bin_thresh = int(cfg.get("bin_thresh", 125))
-        border_err = float(cfg.get("border_err", 0.85))
-        err_corr = float(cfg.get("err_corr", 0.85))
+        max_side = float(cfg.get("max_side_px", 55))
+        clahe_clip = float(cfg.get("clahe_clip", 3.0))
 
         found_markers = {}
         marker_polys = {}
 
-        # Passe 1 : ArUco multi-échelle standard sur gray + clahe (0 faux positif)
-        for scale in (1.0, 1.5, 2.0, 2.5):
-            up = gray if scale == 1.0 else cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
-            clahe = cv2.createCLAHE(clipLimit=clahe_clip, tileGridSize=(8, 8)).apply(up)
-            for src in (up, clahe):
-                params = cv2.aruco.DetectorParameters()
-                params.minMarkerPerimeterRate = 0.01
-                params.maxMarkerPerimeterRate = 0.25
-                params.polygonalApproxAccuracyRate = 0.06
-                params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
-                det = cv2.aruco.ArucoDetector(d, params)
-                corners, ids, _ = det.detectMarkers(src)
-                if ids is not None:
-                    for m, c in zip(ids.flatten(), corners):
-                        mid = int(m)
-                        if mid in (0, 1, 2, 3) and mid not in found_markers:
-                            pts = c[0] / scale
-                            side = float(np.linalg.norm(pts[0] - pts[1]))
-                            if min_side <= side <= max_side:
-                                center = pts.mean(axis=0)
-                                if all(np.hypot(center[0] - v[0], center[1] - v[1]) > 50 for v in found_markers.values()):
-                                    found_markers[mid] = (float(center[0]), float(center[1]))
-                                    marker_polys[mid] = pts
+        params = cv2.aruco.DetectorParameters()
+        params.minMarkerPerimeterRate = 0.012
+        params.maxMarkerPerimeterRate = 0.30
+        params.adaptiveThreshWinSizeMin = 3
+        params.adaptiveThreshWinSizeMax = 25
+        params.adaptiveThreshWinSizeStep = 4
+        params.maxErroneousBitsInBorderRate = 0.55
+        params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+
+        det = cv2.aruco.ArucoDetector(d, params)
+
+        # 1. Détection rapide à l'échelle native (1.0) sur Gray puis CLAHE
+        clahe = cv2.createCLAHE(clipLimit=clahe_clip, tileGridSize=(8, 8)).apply(gray)
+        for src in (gray, clahe):
+            corners, ids, _ = det.detectMarkers(src)
+            if ids is not None:
+                for m, c in zip(ids.flatten(), corners):
+                    mid = int(m)
+                    if mid in (0, 1, 2, 3) and mid not in found_markers:
+                        pts = c[0]
+                        side = float(np.linalg.norm(pts[0] - pts[1]))
+                        if min_side <= side <= max_side:
+                            center = pts.mean(axis=0)
+                            found_markers[mid] = (float(center[0]), float(center[1]))
+                            marker_polys[mid] = pts
             if len(found_markers) == 4:
                 break
 
-        # Passe 2 : Si < 4 marqueurs, passe CLAHE + Binaire + Tolérance de bordure (bords coupés aux ciseaux)
-        if len(found_markers) < 4:
-            for scale in (1.0, 1.5, 2.0):
-                up = gray if scale == 1.0 else cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
-                clahe = cv2.createCLAHE(clipLimit=clahe_clip, tileGridSize=(8, 8)).apply(up)
-                _, bin_clahe = cv2.threshold(clahe, bin_thresh, 255, cv2.THRESH_BINARY)
-                for src in (clahe, bin_clahe):
-                    params = cv2.aruco.DetectorParameters()
-                    params.minMarkerPerimeterRate = 0.008
-                    params.maxMarkerPerimeterRate = 0.25
-                    params.adaptiveThreshWinSizeMin = 3
-                    params.adaptiveThreshWinSizeMax = 45
-                    params.adaptiveThreshWinSizeStep = 4
-                    params.maxErroneousBitsInBorderRate = border_err
-                    params.errorCorrectionRate = err_corr
-                    params.polygonalApproxAccuracyRate = 0.07
-                    det = cv2.aruco.ArucoDetector(d, params)
-                    corners, ids, _ = det.detectMarkers(src)
-                    if ids is not None:
-                        for m, c in zip(ids.flatten(), corners):
-                            mid = int(m)
-                            if mid in (0, 1, 2, 3) and mid not in found_markers:
-                                pts = c[0] / scale
-                                side = float(np.linalg.norm(pts[0] - pts[1]))
-                                if min_side <= side <= max_side:
-                                    center = pts.mean(axis=0)
-                                    if all(np.hypot(center[0] - v[0], center[1] - v[1]) > 60 for v in found_markers.values()):
-                                        found_markers[mid] = (float(center[0]), float(center[1]))
-                                        marker_polys[mid] = pts
-                if len(found_markers) == 4:
-                    break
+        # 2. Complétion géométrique projective si 3 marqueurs sur 4 sont détectés (< 1 ms)
+        # Très fréquent si une pièce ou une main empiète temporairement sur un seul marqueur
+        if len(found_markers) == 3:
+            p = {k: np.array(found_markers[k], dtype=np.float32) for k in found_markers}
+            if 0 in p and 1 in p and 3 in p and 2 not in p:
+                # 2 (Bas-Droite) = 1 + (3 - 0)
+                inferred = p[1] + (p[3] - p[0])
+                found_markers[2] = (float(inferred[0]), float(inferred[1]))
+            elif 0 in p and 1 in p and 2 in p and 3 not in p:
+                # 3 (Bas-Gauche) = 0 + (2 - 1)
+                inferred = p[0] + (p[2] - p[1])
+                found_markers[3] = (float(inferred[0]), float(inferred[1]))
+            elif 1 in p and 2 in p and 3 in p and 0 not in p:
+                # 0 (Haut-Gauche) = 1 + (3 - 2)
+                inferred = p[1] + (p[3] - p[2])
+                found_markers[0] = (float(inferred[0]), float(inferred[1]))
+            elif 0 in p and 2 in p and 3 in p and 1 not in p:
+                # 1 (Haut-Droite) = 0 + (2 - 3)
+                inferred = p[0] + (p[2] - p[3])
+                found_markers[1] = (float(inferred[0]), float(inferred[1]))
 
-        # Passe 3 : Détecteur direct de petit carré noir à cœur blanc (CLAHE + Binaire)
-        if len(found_markers) < 4:
-            cl_full = cv2.createCLAHE(clipLimit=clahe_clip, tileGridSize=(8, 8)).apply(gray)
-            for th_val in (bin_thresh, max(40, bin_thresh - 15), min(220, bin_thresh + 15), 100):
-                _, binary_inv = cv2.threshold(cl_full, int(th_val), 255, cv2.THRESH_BINARY_INV)
-                cnts, _ = cv2.findContours(binary_inv, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-                for c in cnts:
-                    x, y, bw, bh = cv2.boundingRect(c)
-                    if min_side <= bw <= max_side and min_side <= bh <= max_side:
-                        if 0.72 <= (bw / float(bh)) <= 1.38 and (cv2.contourArea(c) / float(bw * bh)) > 0.55:
-                            patch = cl_full[y:y+bh, x:x+bw]
-                            m = max(2, bw // 5)
-                            inner = patch[m:-m, m:-m]
-                            if inner.size > 0:
-                                bmask = np.ones_like(patch, dtype=bool)
-                                bmask[m:-m, m:-m] = False
-                                if np.mean(patch[bmask]) < 125 and np.percentile(inner, 90) > 150 and np.std(inner) > 32:
-                                    cx, cy = x + bw / 2.0, y + bh / 2.0
-                                    if all(np.hypot(cx - v[0], cy - v[1]) > 60 for v in found_markers.values()):
-                                        missing_ids = sorted(list(set([0, 1, 2, 3]) - set(found_markers.keys())))
-                                        if missing_ids:
-                                            mid = missing_ids[0]
-                                            found_markers[mid] = (float(cx), float(cy))
-                                            marker_polys[mid] = np.array([[x, y], [x+bw, y], [x+bw, y+bh], [x, y+bh]], dtype=np.float32)
-                                        if len(found_markers) == 4:
-                                            break
-                if len(found_markers) == 4:
-                    break
+        # 3. Passe légère de secours x1.25 seulement si < 3 marqueurs
+        if len(found_markers) < 3:
+            up = cv2.resize(gray, None, fx=1.25, fy=1.25, interpolation=cv2.INTER_LINEAR)
+            up_clahe = cv2.createCLAHE(clipLimit=clahe_clip, tileGridSize=(8, 8)).apply(up)
+            corners, ids, _ = det.detectMarkers(up_clahe)
+            if ids is not None:
+                for m, c in zip(ids.flatten(), corners):
+                    mid = int(m)
+                    if mid in (0, 1, 2, 3) and mid not in found_markers:
+                        pts = c[0] / 1.25
+                        center = pts.mean(axis=0)
+                        found_markers[mid] = (float(center[0]), float(center[1]))
+                        marker_polys[mid] = pts
 
         self.last_detected_markers = marker_polys
         detected_ids = sorted(list(found_markers.keys()))
 
-        if len(found_markers) == 4:
-            # Ordonner géométriquement les 4 marqueurs pour garantir Haut-Gauche, Haut-Droite, Bas-Droite, Bas-Gauche
-            # ou utiliser l'ordre [0, 1, 2, 3] si tous sont cohérents
-            pts_list = [found_markers[0], found_markers[1], found_markers[2], found_markers[3]] if all(k in found_markers for k in (0, 1, 2, 3)) else list(found_markers.values())
-            pts_np = np.array(pts_list, dtype=np.float32)
-            sums = pts_np.sum(axis=1)
-            diffs = np.diff(pts_np, axis=1).flatten()
+        if len(found_markers) == 4 and all(k in found_markers for k in (0, 1, 2, 3)):
+            # 0: Haut-Gauche, 1: Haut-Droite, 2: Bas-Droite, 3: Bas-Gauche
+            tl = np.array(found_markers[0], dtype=np.float32)
+            tr = np.array(found_markers[1], dtype=np.float32)
+            br = np.array(found_markers[2], dtype=np.float32)
+            bl = np.array(found_markers[3], dtype=np.float32)
+            poly_ordered = np.array([tl, tr, br, bl])
 
-            tl = pts_np[np.argmin(sums)]
-            br = pts_np[np.argmax(sums)]
-            tr = pts_np[np.argmin(diffs)]  # x grand, y petit -> y - x minimal
-            bl = pts_np[np.argmax(diffs)]  # x petit, y grand -> y - x maximal
+            area = cv2.contourArea(poly_ordered)
+            is_convex = cv2.isContourConvex(poly_ordered.astype(np.int32))
+            if not is_convex or area < 0.10 * w * h:
+                return False, None, f"Marqueurs ArUco non convexes ou aire trop faible ({area:.0f} px)"
+
+            # Vérification de parallélogramme/rectangle
+            d_top = np.linalg.norm(tr - tl)
+            d_bot = np.linalg.norm(br - bl)
+            d_left = np.linalg.norm(bl - tl)
+            d_right = np.linalg.norm(br - tr)
+            if min(d_top, d_bot) <= 1e-4 or min(d_left, d_right) <= 1e-4:
+                return False, None, "Marqueurs dégénérés"
+
+            ratio_tb = max(d_top, d_bot) / min(d_top, d_bot)
+            ratio_lr = max(d_left, d_right) / min(d_left, d_right)
+            if ratio_tb > 1.45 or ratio_lr > 1.45:
+                return False, None, f"Quadrilatère ArUco déformé (ratio {ratio_tb:.2f}, {ratio_lr:.2f})"
 
             raw_centers_norm = [[float(p[0] / w), float(p[1] / h)] for p in (tl, tr, br, bl)]
             self.last_aruco_centers_norm = raw_centers_norm
             board_corners_norm = self._apply_inset_to_centers(raw_centers_norm)
-            # Le contour reste celui des ArUco : l'alignement du quadrillage interne est fait ensuite
-            # par fit_grid_lines() sans modifier ces 4 coins.
-            return True, board_corners_norm, f"4/4 marqueurs detectes (IDs: {detected_ids}) + Retrait bordure {cfg['aruco_inset_pct']}%"
+            return True, board_corners_norm, f"4/4 marqueurs détectés (IDs: {detected_ids}) + Retrait {cfg['aruco_inset_pct']}%"
 
         if len(detected_ids) > 0:
-            return False, None, f"{len(detected_ids)}/4 marqueur(s) detecte(s) (IDs: {detected_ids}) — ajustez les curseurs dans la Console Config"
+            return False, None, f"{len(detected_ids)}/4 marqueur(s) détecté(s) (IDs: {detected_ids})"
 
-        return False, None, "Aucun marqueur ArUco detecte — ajustez les curseurs CLAHE / Seuil Binaire"
+        return False, None, "Aucun marqueur ArUco détecté"
 
     def refit_grid(self, raw_frame):
         """Recalcule (ou réinitialise) le quadrillage interne selon l'option avec/sans Hough."""
@@ -810,8 +893,11 @@ class ChessVisionManager:
         with self._lock:
             self._update_homography(w, h)
 
-            # 1. Redressement de perspective 512x512
-            warped = cv2.warpPerspective(frame, self.H, (WARP_SIZE, WARP_SIZE))
+            # 1. Redressement de perspective avec marge PASTILLE_PAD (64px) pour capturer les pastilles qui débordent du quadrillage
+            pad_size = WARP_SIZE + 2 * PASTILLE_PAD
+            warped_padded = cv2.warpPerspective(frame, self.H_pad, (pad_size, pad_size))
+            self._latest_warped_padded = warped_padded
+            warped = warped_padded[PASTILLE_PAD:PASTILLE_PAD + WARP_SIZE, PASTILLE_PAD:PASTILLE_PAD + WARP_SIZE]
             self._latest_warped_frame = warped.copy()
 
             # 2. Détection de stabilité et mouvement
@@ -859,6 +945,16 @@ class ChessVisionManager:
                     cv2.fillConvexPoly(mask, corners_px, 255)
                     idx = mask > 0
                     display_frame[idx] = cv2.addWeighted(display_frame[idx], 0.15, unwarped_grad[idx], 0.85, 0)
+                except Exception:
+                    pass
+
+            self._ar_frame_count += 1
+            if self.show_ar_pieces and (not self.last_detected_pastilles or self._ar_frame_count % 3 == 0):
+                try:
+                    p_center = self.get_perspective_center()
+                    fresh_pastilles = detect_pastilles_by_square(warped_padded, center_xy=p_center, pad=PASTILLE_PAD)
+                    if fresh_pastilles:
+                        self.last_detected_pastilles = fresh_pastilles
                 except Exception:
                     pass
 
@@ -953,36 +1049,202 @@ class ChessVisionManager:
             cv2.line(display_frame, corners_px[3], corners_px[0], (0, 200, 200), 2, cv2.LINE_AA)
 
             if self.show_ar_labels:
-                # Label côté Blancs
-                mid_white = ((corners_px[3][0] + corners_px[2][0]) // 2 - 60, (corners_px[3][1] + corners_px[2][1]) // 2 + 20)
+                # 1. Nom de chaque case (a1..h8) au centre selon la vision IA
+                for col in range(8):
+                    for row in range(8):
+                        sq_name = f"{chr(ord('a') + col)}{8 - row}"
+                        poly = self.square_to_camera_polygon(col, row)
+                        cx = int(np.mean(poly[:, 0]))
+                        cy = int(np.mean(poly[:, 1]))
+                        # Contour noir + texte jaune fluo pour lisibilité parfaite
+                        cv2.putText(display_frame, sq_name, (cx - 10, cy + 4),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 0, 0), 2, cv2.LINE_AA)
+                        cv2.putText(display_frame, sq_name, (cx - 10, cy + 4),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 255, 255), 1, cv2.LINE_AA)
+
+                # 2. Lettres des colonnes A..H en bordure basse (Blancs) et haute (Noirs)
+                for col in range(8):
+                    letter = chr(ord('a') + col).upper()
+                    # Bord bas (Blancs, row 7)
+                    poly_b = self.square_to_camera_polygon(col, 7)
+                    bx = int(np.mean(poly_b[:, 0]))
+                    by = int(np.max(poly_b[:, 1])) + 16
+                    cv2.putText(display_frame, letter, (bx - 5, by),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 0, 0), 2, cv2.LINE_AA)
+                    cv2.putText(display_frame, letter, (bx - 5, by),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.48, (80, 255, 100), 1, cv2.LINE_AA)
+
+                    # Bord haut (Noirs, row 0)
+                    poly_t = self.square_to_camera_polygon(col, 0)
+                    tx = int(np.mean(poly_t[:, 0]))
+                    ty = int(np.min(poly_t[:, 1])) - 8
+                    cv2.putText(display_frame, letter, (tx - 5, ty),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 0, 0), 2, cv2.LINE_AA)
+                    cv2.putText(display_frame, letter, (tx - 5, ty),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.48, (255, 130, 70), 1, cv2.LINE_AA)
+
+                # 3. Chiffres des rangées 1..8 en bordure gauche (col a) et droite (col h)
+                for row in range(8):
+                    digit = str(8 - row)
+                    # Bord gauche (colonne a)
+                    poly_l = self.square_to_camera_polygon(0, row)
+                    lx = int(np.min(poly_l[:, 0])) - 15
+                    ly = int(np.mean(poly_l[:, 1])) + 5
+                    cv2.putText(display_frame, digit, (lx, ly),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 0, 0), 2, cv2.LINE_AA)
+                    cv2.putText(display_frame, digit, (lx, ly),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 220, 255), 1, cv2.LINE_AA)
+
+                    # Bord droit (colonne h)
+                    poly_r = self.square_to_camera_polygon(7, row)
+                    rx = int(np.max(poly_r[:, 0])) + 6
+                    ry = int(np.mean(poly_r[:, 1])) + 5
+                    cv2.putText(display_frame, digit, (rx, ry),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 0, 0), 2, cv2.LINE_AA)
+                    cv2.putText(display_frame, digit, (rx, ry),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 220, 255), 1, cv2.LINE_AA)
+
+                # 4. Labels d'orientation générale
+                mid_white = ((corners_px[3][0] + corners_px[2][0]) // 2 - 60, (corners_px[3][1] + corners_px[2][1]) // 2 + 35)
                 cv2.putText(display_frame, "BLANCS (1)", mid_white, cv2.FONT_HERSHEY_SIMPLEX, 0.55, (80, 255, 100), 2, cv2.LINE_AA)
-                # Label côté Noirs
-                mid_black = ((corners_px[0][0] + corners_px[1][0]) // 2 - 50, (corners_px[0][1] + corners_px[1][1]) // 2 - 10)
+                mid_black = ((corners_px[0][0] + corners_px[1][0]) // 2 - 50, (corners_px[0][1] + corners_px[1][1]) // 2 - 25)
                 cv2.putText(display_frame, "NOIRS (8)", mid_black, cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 130, 70), 2, cv2.LINE_AA)
 
         # D. Flèche AR projetée en perspective (coup du bot ou coach)
         if self.show_ar_arrow and self.ar_arrow:
             self._draw_perspective_arrow(display_frame, overlay, self.ar_arrow)
 
-        # E. Pastilles des pièces détectées en direct
-        if self.show_ar_pieces and self.last_detected_pieces is not None:
+        # E. Pastilles des pièces détectées en direct avec lissage temporel anti-scintillement
+        if self.show_ar_pieces:
             try:
-                for sq in range(min(64, len(self.last_detected_pieces))):
-                    p_empty, p_white, p_black = self.last_detected_pieces[sq]
-                    col = sq % 8
-                    row = 7 - (sq // 8)
-                    poly = self.square_to_camera_polygon(col, row)
-                    cx = int(np.mean(poly[:, 0]))
-                    cy = int(np.mean(poly[:, 1]))
+                current_detections = {}
 
-                    if p_white > 0.50:
-                        cv2.circle(display_frame, (cx, cy), 12, (245, 245, 245), -1, cv2.LINE_AA)
-                        cv2.circle(display_frame, (cx, cy), 12, (30, 30, 30), 2, cv2.LINE_AA)
-                        cv2.circle(display_frame, (cx, cy), 4, (20, 20, 20), -1, cv2.LINE_AA)
-                    elif p_black > 0.50:
-                        cv2.circle(display_frame, (cx, cy), 12, (35, 35, 35), -1, cv2.LINE_AA)
-                        cv2.circle(display_frame, (cx, cy), 12, (240, 240, 240), 2, cv2.LINE_AA)
-                        cv2.circle(display_frame, (cx, cy), 4, (240, 240, 240), -1, cv2.LINE_AA)
+                # 1. Pastilles physiques de couleur détectées (Violet, Bleu, Rouge, Vert)
+                # Projection projective exacte via H_inv : ancrée directement sur le sommet de la pièce
+                if self.last_detected_pastilles and self.H_inv is not None:
+                    p_items = list(self.last_detected_pastilles.items())
+                    if p_items:
+                        warp_pts = np.array([[[p.cx, p.cy]] for sq, p in p_items], dtype=np.float32)
+                        cam_pts = cv2.perspectiveTransform(warp_pts, self.H_inv)
+                        for i, (sq, p) in enumerate(p_items):
+                            pt_cam = cam_pts[i][0]
+                            is_w = p.type in ('PAWN_W', 'PIECE_W')
+                            current_detections[sq] = {
+                                'cam_x': float(pt_cam[0]),
+                                'cam_y': float(pt_cam[1]),
+                                'bgr': p.color_bgr,
+                                'type': p.type,
+                                'piece_color': 'white' if is_w else 'black',
+                                'is_pastille': True,
+                            }
+
+                # 2. Mode Hybride (Pastilles + Pièces validées par le jeu)
+                piece_mode = self.detection_config.get("piece_mode", "PASTILLES_STRICT")
+                board = getattr(self, 'current_game_board', None)
+                raw_p = self.last_detected_pieces
+
+                if piece_mode == "HYBRID" and board is not None:
+                    for sq in range(64):
+                        if sq in current_detections:
+                            continue  # Déjà couvert par une pastille physique de couleur
+                        piece = board.piece_at(sq)
+                        if piece is None:
+                            continue  # Jamais de pièce fantôme sur une case vide
+
+                        # Si la vision affirme que la case est vide ou que la pièce attendue n'y est plus :
+                        if raw_p is not None and len(raw_p) > sq:
+                            p_empty, p_white, p_black = raw_p[sq][:3]
+                            if p_empty >= 0.45:
+                                continue
+                            if piece.color == chess.WHITE and p_white < 0.35:
+                                continue
+                            if piece.color == chess.BLACK and p_black < 0.35:
+                                continue
+
+                        col = sq % 8
+                        row = 7 - (sq // 8)
+                        poly = self.square_to_camera_polygon(col, row)
+                        cx = float(np.mean(poly[:, 0]))
+                        cy = float(np.mean(poly[:, 1]))
+                        is_w = (piece.color == chess.WHITE)
+                        current_detections[sq] = {
+                            'cam_x': cx,
+                            'cam_y': cy,
+                            'bgr': (240, 240, 240) if is_w else (35, 35, 35),
+                            'type': 'PIECE_W' if is_w else 'PIECE_B',
+                            'piece_color': 'white' if is_w else 'black',
+                            'is_pastille': False,
+                        }
+
+                # 3. Suivi temporel persistant (Debounce + Hystérésis anti-scintillement)
+                if not hasattr(self, '_ar_piece_tracker') or self._ar_piece_tracker is None:
+                    self._ar_piece_tracker = {}
+
+                TTL_INIT = 8  # Persistance de ~260ms à 30fps
+
+                for sq, det in current_detections.items():
+                    if sq in self._ar_piece_tracker:
+                        track = self._ar_piece_tracker[sq]
+                        track['ttl'] = TTL_INIT
+                        track['seen_count'] += 1
+                        track['cam_x'] = 0.80 * track['cam_x'] + 0.20 * det['cam_x']
+                        track['cam_y'] = 0.80 * track['cam_y'] + 0.20 * det['cam_y']
+                        track['bgr'] = det['bgr']
+                        track['is_pastille'] = det['is_pastille']
+                        track['piece_color'] = det['piece_color']
+                        track['type'] = det['type']
+                    else:
+                        init_seen = 2 if (det['is_pastille'] or board is not None) else 1
+                        self._ar_piece_tracker[sq] = {
+                            'cam_x': det['cam_x'],
+                            'cam_y': det['cam_y'],
+                            'bgr': det['bgr'],
+                            'type': det['type'],
+                            'piece_color': det['piece_color'],
+                            'is_pastille': det['is_pastille'],
+                            'ttl': TTL_INIT,
+                            'seen_count': init_seen,
+                        }
+
+                dead_sqs = []
+                for sq, track in self._ar_piece_tracker.items():
+                    if sq not in current_detections:
+                        track['ttl'] -= 1
+                        if track['ttl'] <= 0:
+                            dead_sqs.append(sq)
+                for sq in dead_sqs:
+                    del self._ar_piece_tracker[sq]
+
+                # 4. Rendu visuel propre et stable (Apple Design)
+                for sq, track in self._ar_piece_tracker.items():
+                    if track['seen_count'] < 2 and not track['is_pastille']:
+                        continue
+
+                    cx = int(round(track['cam_x']))
+                    cy = int(round(track['cam_y']))
+                    bgr = track['bgr']
+                    is_pastille = track['is_pastille']
+                    p_color = track['piece_color']
+
+                    if is_pastille:
+                        # Anneau externe noir de contraste
+                        cv2.circle(display_frame, (cx, cy), 13, (15, 15, 15), -1, cv2.LINE_AA)
+                        # Pastille de couleur (Violet, Bleu, Rouge, Vert)
+                        cv2.circle(display_frame, (cx, cy), 11, bgr, -1, cv2.LINE_AA)
+                        # Filet lumineux blanc
+                        cv2.circle(display_frame, (cx, cy), 12, (255, 255, 255), 1, cv2.LINE_AA)
+                        # Point contrasté central
+                        dot_col = (255, 255, 255) if p_color == 'black' else (20, 20, 20)
+                        cv2.circle(display_frame, (cx, cy), 3, dot_col, -1, cv2.LINE_AA)
+                    else:
+                        if p_color == 'white':
+                            cv2.circle(display_frame, (cx, cy), 12, (245, 245, 245), -1, cv2.LINE_AA)
+                            cv2.circle(display_frame, (cx, cy), 12, (30, 30, 30), 2, cv2.LINE_AA)
+                            cv2.circle(display_frame, (cx, cy), 4, (30, 30, 30), -1, cv2.LINE_AA)
+                        else:
+                            cv2.circle(display_frame, (cx, cy), 12, (35, 35, 35), -1, cv2.LINE_AA)
+                            cv2.circle(display_frame, (cx, cy), 12, (240, 240, 240), 2, cv2.LINE_AA)
+                            cv2.circle(display_frame, (cx, cy), 4, (240, 240, 240), -1, cv2.LINE_AA)
             except Exception:
                 pass
 
@@ -1123,28 +1385,32 @@ class ChessVisionManager:
         if ref_warped is None or cur_warped is None:
             return {sq: 0.0 for sq in range(64)}
 
+        # Conversions globales 1 seule fois pour toute l'image (gain x5 à x10 CPU)
+        ref_lab = cv2.cvtColor(ref_warped, cv2.COLOR_BGR2LAB).astype(np.float32)
+        cur_lab = cv2.cvtColor(cur_warped, cv2.COLOR_BGR2LAB).astype(np.float32)
+        diff_l = np.abs(cur_lab[:, :, 0] - ref_lab[:, :, 0])
+        diff_ab = np.mean(np.abs(cur_lab[:, :, 1:] - ref_lab[:, :, 1:]), axis=2)
+
+        ref_gray = cv2.cvtColor(ref_warped, cv2.COLOR_BGR2GRAY)
+        cur_gray = cv2.cvtColor(cur_warped, cv2.COLOR_BGR2GRAY)
+        lap_ref = cv2.Laplacian(ref_gray, cv2.CV_32F)
+        lap_cur = cv2.Laplacian(cur_gray, cv2.CV_32F)
+
+        margin = 12
         scores = {}
         for sq in range(64):
-            roi_ref = self.get_square_roi(ref_warped, sq)
-            roi_cur = self.get_square_roi(cur_warped, sq)
+            col = sq % 8
+            row = 7 - (sq // 8)
+            y1, y2 = row * SQUARE_SIZE + margin, (row + 1) * SQUARE_SIZE - margin
+            x1, x2 = col * SQUARE_SIZE + margin, (col + 1) * SQUARE_SIZE - margin
 
-            if roi_ref.size == 0 or roi_cur.size == 0:
-                scores[sq] = 0.0
-                continue
-
-            ref_lab = cv2.cvtColor(roi_ref, cv2.COLOR_BGR2LAB)
-            cur_lab = cv2.cvtColor(roi_cur, cv2.COLOR_BGR2LAB)
-
-            diff_l = float(np.mean(np.abs(cur_lab[:, :, 0].astype(float) - ref_lab[:, :, 0].astype(float))))
-            diff_ab = float(np.mean(np.abs(cur_lab[:, :, 1:].astype(float) - ref_lab[:, :, 1:].astype(float))))
-
-            ref_gray = cv2.cvtColor(roi_ref, cv2.COLOR_BGR2GRAY)
-            cur_gray = cv2.cvtColor(roi_cur, cv2.COLOR_BGR2GRAY)
-            edge_ref = float(cv2.Laplacian(ref_gray, cv2.CV_64F).var())
-            edge_cur = float(cv2.Laplacian(cur_gray, cv2.CV_64F).var())
+            dl = float(np.mean(diff_l[y1:y2, x1:x2]))
+            dab = float(np.mean(diff_ab[y1:y2, x1:x2]))
+            edge_ref = float(np.var(lap_ref[y1:y2, x1:x2]))
+            edge_cur = float(np.var(lap_cur[y1:y2, x1:x2]))
             edge_diff = min(abs(edge_cur - edge_ref), 100.0)
 
-            score = 0.6 * diff_l + 0.8 * diff_ab + 0.15 * edge_diff
+            score = 0.6 * dl + 0.8 * dab + 0.15 * edge_diff
             scores[sq] = round(score, 2)
 
         return scores
@@ -1173,9 +1439,30 @@ class ChessVisionManager:
             out[sq] = (ncc, float(a.std()), float(b.std()))
         return out
 
+    def get_perspective_center(self):
+        """Calcule le centre optique effectif (Cx, Cy) en fonction de l'asymétrie perspective des 4 coins."""
+        if not self.is_calibrated or not self.corners_norm or len(self.corners_norm) != 4:
+            return (WARP_SIZE / 2.0, WARP_SIZE / 2.0)
+        pts = np.array(self.corners_norm, dtype=np.float32)
+        tl, tr, br, bl = pts[0], pts[1], pts[2], pts[3]
+        h_left = float(np.linalg.norm(bl - tl))
+        h_right = float(np.linalg.norm(br - tr))
+        w_top = float(np.linalg.norm(tr - tl))
+        w_bot = float(np.linalg.norm(br - bl))
+        tilt_y = (w_bot - w_top) / max(w_bot, w_top, 1e-4)
+        tilt_x = (h_right - h_left) / max(h_right, h_left, 1e-4)
+        cx = (WARP_SIZE / 2.0) + tilt_x * (WARP_SIZE / 4.0)
+        cy = (WARP_SIZE / 2.0) + tilt_y * (WARP_SIZE / 4.0)
+        return (cx, cy)
+
     def get_latest_warped_frame(self):
         with self._lock:
             return self._latest_warped_frame.copy() if self._latest_warped_frame is not None else None
+
+    def get_latest_warped_padded(self):
+        with self._lock:
+            p = getattr(self, '_latest_warped_padded', None)
+            return p.copy() if p is not None else None
 
     def get_warped_jpeg(self):
         with self._lock:
@@ -1201,5 +1488,7 @@ class ChessVisionManager:
                 'detected_aruco_ids': sorted(list(self.last_detected_markers.keys())),
                 'grid_refined_lines': int(self.refined_grid_count) if self.refined_grid else 0,
                 'is_board_stable': self.is_board_stable,
-                'motion_ratio': round(self.motion_ratio, 4)
+                'continuous_detection': self.continuous_detection,
+                'motion_ratio': round(self.motion_ratio, 4),
+                'pastilles_detected_count': len(self.last_detected_pastilles)
             }

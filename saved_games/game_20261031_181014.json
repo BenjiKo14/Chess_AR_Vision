@@ -1,0 +1,50 @@
+{
+  "game_id": "game_20261031_181014",
+  "date_str": "31/10/2026 18:11:48",
+  "fen": "r1bqkbnr/pppppppp/2n5/8/3P4/5N2/PPP1PPPP/RNBQKB1R b KQkq - 2 2",
+  "state": "WAIT_BOT_THINKING",
+  "last_move": "g1f3",
+  "initial_fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+  "move_history": [
+    {
+      "num": 1,
+      "uci": "d2d4",
+      "san": "d4",
+      "player": "human",
+      "fen": "rnbqkbnr/pppppppp/8/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq - 0 1",
+      "turn": "black",
+      "is_check": false,
+      "is_checkmate": false,
+      "check_square": null,
+      "winner": null
+    },
+    {
+      "num": 2,
+      "uci": "b8c6",
+      "san": "Nc6",
+      "player": "bot",
+      "fen": "r1bqkbnr/pppppppp/2n5/8/3P4/8/PPP1PPPP/RNBQKBNR w KQkq - 1 2",
+      "turn": "white",
+      "is_check": false,
+      "is_checkmate": false,
+      "check_square": null,
+      "winner": null
+    },
+    {
+      "num": 3,
+      "uci": "g1f3",
+      "san": "Nf3",
+      "player": "human",
+      "fen": "r1bqkbnr/pppppppp/2n5/8/3P4/5N2/PPP1PPPP/RNBQKB1R b KQkq - 2 2",
+      "turn": "black",
+      "is_check": false,
+      "is_checkmate": false,
+      "check_square": null,
+      "winner": null
+    }
+  ],
+  "engine_mode": "HUMAN_VS_BOT",
+  "human_color": true,
+  "bot_elo": 1200,
+  "saved_at": 1793466708.6996212
+}

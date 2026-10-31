@@ -1,5 +1,6 @@
 import sys
 import time
+from datetime import datetime
 import json
 import os
 import threading
@@ -37,8 +38,17 @@ class ChessGameManager:
         self.log_fn = log_fn or safe_log_print
         self._lock = threading.RLock()
         self.save_path = save_path
+        save_dir = os.path.dirname(os.path.abspath(save_path)) if os.path.dirname(save_path) else "."
+        self.saved_games_dir = os.path.join(save_dir, "saved_games")
+        try:
+            os.makedirs(self.saved_games_dir, exist_ok=True)
+        except Exception:
+            pass
+        self.current_game_id = f"game_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
         self.board = chess.Board()
+        if hasattr(self.vision, 'current_game_board'):
+            self.vision.current_game_board = self.board
         # États : "IDLE", "SETUP_CHECK", "WAIT_HUMAN_MOVE", "WAIT_BOT_THINKING", "WAIT_BOT_EXECUTION", "GAME_OVER"
         self.state = "IDLE"
 
@@ -53,7 +63,7 @@ class ChessGameManager:
         # Garde-fous contre les coups fantômes (ombre, main immobile, reflet)
         self.confirm_seconds = 0.7    # le même coup doit être vu pendant ce temps sur des images stables
         self.min_score_margin = 2.0   # avance minimale sur un autre coup possible
-        self.leak_ratio = 0.7         # débordement toléré d'une pièce haute sur une case voisine
+        self.leak_ratio = 0.88         # débordement toléré d'une pièce haute sur une case voisine
         self.same_piece_ncc = 0.7     # au-dessus : la case « vidée » montre encore la même pièce
         self.empty_max_std = 6.0      # texture max d'une case vide (sous une ombre, une pièce reste au-dessus)
         self.hint_after_seconds = 1.5
@@ -98,10 +108,14 @@ class ChessGameManager:
     def _save_game(self):
         """Sauvegarde l'état actuel de la partie dans un fichier JSON pour reprise automatique."""
         try:
+            now_dt = datetime.now()
             data = {
+                "game_id": self.current_game_id,
+                "date_str": now_dt.strftime("%d/%m/%Y %H:%M:%S"),
                 "fen": self.board.fen(),
                 "state": self.state,
                 "last_move": self.last_move,
+                "initial_fen": getattr(self, "initial_fen", chess.STARTING_FEN),
                 "move_history": self.move_history,
                 "engine_mode": getattr(self.engine, "game_mode", "HUMAN_VS_BOT"),
                 "human_color": getattr(self.engine, "human_color", 1),
@@ -110,6 +124,12 @@ class ChessGameManager:
             }
             with open(self.save_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
+
+            # Archive automatique dans saved_games/ dès qu'un coup est joué
+            if len(self.move_history) > 0 and getattr(self, 'saved_games_dir', None):
+                archive_path = os.path.join(self.saved_games_dir, f"{self.current_game_id}.json")
+                with open(archive_path, "w", encoding="utf-8") as f_arc:
+                    json.dump(data, f_arc, indent=2, ensure_ascii=False)
         except Exception as e:
             self.log(f"⚠️ Erreur sauvegarde partie ({self.save_path}): {e}")
 
@@ -120,11 +140,13 @@ class ChessGameManager:
         try:
             with open(self.save_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
+            self.current_game_id = data.get("game_id", getattr(self, "current_game_id", "game_default"))
             fen = data.get("fen")
             if fen:
                 self.board = chess.Board(fen)
                 self.move_history = data.get("move_history", [])
                 self.last_move = data.get("last_move")
+                self.initial_fen = data.get("initial_fen", chess.STARTING_FEN)
                 saved_state = data.get("state", "WAIT_HUMAN_MOVE")
                 # Partie en cours : reprendre au bon tour (le bot recalcule son coup si c'est à lui)
                 if saved_state in ("WAIT_HUMAN_MOVE", "WAIT_BOT_THINKING", "WAIT_BOT_EXECUTION"):
@@ -166,6 +188,8 @@ class ChessGameManager:
     def start_new_game(self, fen=None):
         """Démarre une nouvelle partie."""
         with self._lock:
+            self.initial_fen = fen if fen else chess.STARTING_FEN
+            self.current_game_id = f"game_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
             self.board = chess.Board(fen) if fen else chess.Board()
             self.move_history.clear()
             self.last_move = None
@@ -198,6 +222,17 @@ class ChessGameManager:
 
             self._set_reference(cur)
             self.vision.setup_mode = False
+
+            # Auto-calibration automatique des couleurs et des pièces sur la position initiale standard
+            try:
+                from piece_auto_calibrator import auto_calibrator
+                cur_padded = getattr(self.vision, 'get_latest_warped_padded', lambda: None)()
+                p_center = getattr(self.vision, 'get_perspective_center', lambda: None)()
+                ok_cal, msg_cal, _ = auto_calibrator.calibrate_from_starting_board(cur, warped_padded=cur_padded, center_xy=p_center)
+                if ok_cal:
+                    self.log(f"🎯 {msg_cal}")
+            except Exception as e:
+                self.log(f"[WARN] Auto-calibration pièces : {e}")
 
             # Déterminer qui commence
             if self.engine.game_mode == "HUMAN_VS_BOT" and self.board.turn != self.engine.human_color:
@@ -340,12 +375,16 @@ class ChessGameManager:
             cur = self.vision.get_latest_warped_frame()
             if cur is None:
                 return
+            cur_padded = getattr(self.vision, 'get_latest_warped_padded', lambda: None)()
             board = self.board.copy(stack=False)
             fen = board.fen()
 
         # Lecture de l'image hors verrou (quelques dizaines de ms)
-        probs = self.reader.read(cur, board)
+        p_center = getattr(self.vision, 'get_perspective_center', lambda: None)()
+        probs = self.reader.read(cur, board, center_xy=p_center, warped_padded=cur_padded, config=getattr(self.vision, 'detection_config', None))
         self.vision.last_detected_pieces = probs
+        self.vision.last_detected_pastilles = getattr(self.reader, 'last_pastilles', {})
+        self.vision.current_game_board = board
         if self._maybe_fix_orientation(cur, board, probs):
             return
 
@@ -486,12 +525,21 @@ class ChessGameManager:
         # une pièce haute qui empiète sur la case voisine (adjacente et nettement plus faible).
         weakest = min(changes.get(sq, 0.0) for sq in expected)
         stray = []
+        pastilles = getattr(self.vision, 'last_detected_pastilles', {})
         for sq in significant:
             if sq in expected:
                 continue
             adjacent = any(chess.square_distance(sq, e) == 1 for e in expected)
-            if not (adjacent and changes.get(sq, 0.0) < self.leak_ratio * weakest):
-                stray.append(sq)
+            if adjacent:
+                if changes.get(sq, 0.0) < self.leak_ratio * weakest:
+                    continue
+                # Tolérer l'ombre projetée ou le débordement optique sur une case adjacente
+                # si une pièce avec pastille arrive et que la case voisine n'a pas de pastille propre
+                # (ex. grande Dame ou Roi blanc projetant une ombre sur une case vide adjacente)
+                if any(e in pastilles for e in expected):
+                    if sq not in pastilles or self.board.piece_at(sq) is not None:
+                        continue
+            stray.append(sq)
         if stray:
             return (f"changement inexpliqué sur {self._names(stray)}. Si l'échiquier correspond à l'état "
                     f"affiché → « Resync », sinon « ✏️ Corriger la position »")
@@ -538,6 +586,7 @@ class ChessGameManager:
         (« Case qui paraît vide » n'est pas fiable : pièce noire sur case foncée sous lampe faible.)"""
         score, worst, contra, informative = 0.0, np.inf, np.inf, 0
         ok_diff = True
+        pastilles = getattr(self.vision, 'last_detected_pastilles', {})
         for sq, old, new in diffs:
             r = 0.0
             if old != new:
@@ -549,11 +598,29 @@ class ChessGameManager:
                 else:
                     opposite = 3 - new
                     contra = min(contra, float(logp[sq, new] - logp[sq, opposite]))
+
+            # Prise en compte directe des pastilles physiques détectées
+            has_matching_pastille = False
+            p_obj = pastilles.get(sq)
+            if p_obj is not None:
+                is_w = p_obj.type in ('PAWN_W', 'PIECE_W')
+                p_col = 1 if is_w else 2
+                if new == p_col:
+                    has_matching_pastille = True
+                    r += 30.0
+                    score += 25.0
+                    # La pastille physique de bonne couleur prouve la présence : éliminer tout faux veto de fond
+                    if contra < 0:
+                        contra = 1.0
+
             if changes is not None:
                 if changes.get(sq, 0.0) >= self.min_change_threshold:
                     r += self.diff_bonus
                 elif old != new:
-                    ok_diff = False   # l'image de référence dit que cette case n'a pas bougé
+                    if not has_matching_pastille:
+                        ok_diff = False   # l'image de référence dit que cette case n'a pas bougé
+                    else:
+                        r += self.diff_bonus * 0.5
                 else:
                     # Pièce remplacée par une autre de même couleur (ex. reprise) :
                     # le changement peut être discret, simple pénalité
@@ -569,8 +636,12 @@ class ChessGameManager:
                 if sq in touched:
                     continue
                 v = changes.get(sq, 0.0)
-                leak = (v < self.leak_ratio * weakest
-                        and any(chess.square_distance(sq, t) == 1 for t in touched))
+                adjacent = any(chess.square_distance(sq, t) == 1 for t in touched)
+                leak = (v < self.leak_ratio * weakest and adjacent)
+                # Tolérer le débordement / ombre sur une case occupée adjacente si une pièce avec pastille arrive
+                if not leak and adjacent and any(t in pastilles for t in touched):
+                    if self.board.piece_at(sq) is not None:
+                        leak = True
                 if not leak:
                     score -= self.diff_bonus
         return score, worst, contra, informative, ok_diff
@@ -765,18 +836,35 @@ class ChessGameManager:
             move.to_square: {"color": (0, 220, 100), "alpha": 0.35}
         }
 
-        # Échec ?
+        # Échec ou Échec et Mat en AR
         if self.board.is_check():
             king_sq = self.board.king(self.board.turn)
             if king_sq is not None:
-                self.vision.highlight_squares[king_sq] = {"color": (30, 30, 240), "alpha": 0.6}
+                if self.board.is_checkmate():
+                    # Tout rouge en échec et mat
+                    self.vision.highlight_squares[king_sq] = {"color": (0, 0, 245), "alpha": 0.80}
+                else:
+                    # Orange en échec simple
+                    self.vision.highlight_squares[king_sq] = {"color": (0, 140, 255), "alpha": 0.65}
+
+        is_chk = self.board.is_check()
+        is_mat = self.board.is_checkmate()
+        king_sq = self.board.king(self.board.turn) if is_chk else None
+        winner = None
+        if is_mat:
+            winner = "black" if self.board.turn == chess.WHITE else "white"
 
         entry = {
             "num": len(self.board.move_stack),
             "uci": uci,
             "san": san,
             "player": player,
-            "fen": self.board.fen()
+            "fen": self.board.fen(),
+            "turn": "white" if self.board.turn == chess.WHITE else "black",
+            "is_check": is_chk,
+            "is_checkmate": is_mat,
+            "check_square": king_sq,
+            "winner": winner
         }
         self.move_history.append(entry)
         self.log(f"♟️ Coup validé: {san} ({uci}) [{player}]")
@@ -886,14 +974,28 @@ class ChessGameManager:
 
     def get_status(self):
         with self._lock:
+            is_check = self.board.is_check()
+            is_mat = self.board.is_checkmate()
+            king_sq = self.board.king(self.board.turn) if is_check else None
+            winner = None
+            if is_mat:
+                winner = "black" if self.board.turn == chess.WHITE else "white"
+            elif self.board.is_stalemate() or self.board.is_insufficient_material():
+                winner = "draw"
+
             return {
                 "state": self.state,
                 "fen": self.board.fen(),
                 "turn": "white" if self.board.turn == chess.WHITE else "black",
-                "is_check": self.board.is_check(),
+                "is_check": is_check,
+                "is_checkmate": is_mat,
                 "is_game_over": self.board.is_game_over(),
                 "result": self.board.result() if self.board.is_game_over() else None,
+                "check_square": king_sq,
+                "winner": winner,
+                "initial_fen": getattr(self, "initial_fen", chess.STARTING_FEN),
                 "last_move": self.last_move,
+                "initial_fen": getattr(self, "initial_fen", chess.STARTING_FEN),
                 "pending_bot_move": {
                     "uci": self.pending_bot_move["uci"],
                     "san": self.pending_bot_move["san"],
@@ -902,7 +1004,7 @@ class ChessGameManager:
                 "arrow": self._arrow_status(),
                 "ambiguity": self.ambiguity,
                 "vision_hint": self.vision_hint,
-                "history": self.move_history[-10:]
+                "history": self.move_history
             }
 
     def _arrow_status(self):
@@ -914,3 +1016,135 @@ class ChessGameManager:
             "uci": chess.square_name(a["from_sq"]) + chess.square_name(a["to_sq"]),
             "kind": a.get("kind", "bot")
         }
+
+    def list_saved_games(self):
+        """Retourne la liste de toutes les parties archivées, triées de la plus récente à la plus ancienne."""
+        games = []
+        if not hasattr(self, 'saved_games_dir') or not os.path.exists(self.saved_games_dir):
+            return games
+        for fname in os.listdir(self.saved_games_dir):
+            if fname.endswith(".json"):
+                fpath = os.path.join(self.saved_games_dir, fname)
+                try:
+                    with open(fpath, "r", encoding="utf-8") as f:
+                        d = json.load(f)
+                    hist = d.get("move_history", [])
+                    games.append({
+                        "game_id": d.get("game_id", fname.replace(".json", "")),
+                        "filename": fname,
+                        "date_str": d.get("date_str", "Inconnue"),
+                        "saved_at": d.get("saved_at", 0),
+                        "moves_count": len(hist),
+                        "last_move": d.get("last_move"),
+                        "state": d.get("state"),
+                        "fen": d.get("fen"),
+                        "preview_moves": [m.get("san") for m in hist[-5:] if isinstance(m, dict)]
+                    })
+                except Exception:
+                    continue
+        games.sort(key=lambda x: x["saved_at"], reverse=True)
+        return games
+
+    def load_saved_game_by_id(self, game_id):
+        """Restaure une partie spécifique depuis saved_games/."""
+        fname = f"{game_id}.json" if not game_id.endswith(".json") else game_id
+        fpath = os.path.join(self.saved_games_dir, fname)
+        if not os.path.exists(fpath):
+            return False, f"Partie {game_id} introuvable dans l'archive"
+
+        with self._lock:
+            try:
+                with open(fpath, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+
+                self.current_game_id = data.get("game_id", game_id)
+                self.board = chess.Board(data.get("fen"))
+                self.move_history = data.get("move_history", [])
+                self.last_move = data.get("last_move")
+                self.initial_fen = data.get("initial_fen", chess.STARTING_FEN)
+                self.consecutive_match_count = 0
+                self.last_candidate_move = None
+                self._generation += 1
+                self.ambiguity = None
+                self._reset_candidate()
+                self._clear_block()
+                self.vision.ar_arrow = None
+                self.vision.highlight_squares.clear()
+                self.vision.setup_mode = False
+
+                saved_state = data.get("state", "WAIT_HUMAN_MOVE")
+                if saved_state in ("WAIT_HUMAN_MOVE", "WAIT_BOT_THINKING", "WAIT_BOT_EXECUTION"):
+                    if self.engine.game_mode == "HUMAN_VS_BOT" and self.board.turn != self.engine.human_color:
+                        self._start_bot_turn()
+                    else:
+                        self.state = "WAIT_HUMAN_MOVE"
+                else:
+                    self.state = saved_state
+
+                # Surbrillance du dernier coup si existant
+                if self.last_move and len(self.last_move) >= 4:
+                    try:
+                        m = chess.Move.from_uci(self.last_move)
+                        self.vision.highlight_squares = {
+                            m.from_square: {"color": (255, 180, 0), "alpha": 0.35},
+                            m.to_square: {"color": (0, 220, 100), "alpha": 0.35}
+                        }
+                    except Exception:
+                        pass
+
+                # Sauvegarde active immédiate
+                self._save_game()
+                self.log(f"📂 Partie restaurée depuis l'archive : {game_id} ({len(self.move_history)} coups)")
+                return True, "Partie restaurée avec succès"
+            except Exception as e:
+                return False, f"Erreur lors du chargement de la partie : {e}"
+
+    def delete_saved_game_by_id(self, game_id):
+        """Supprime une partie de l'archive."""
+        fname = f"{game_id}.json" if not game_id.endswith(".json") else game_id
+        fpath = os.path.join(self.saved_games_dir, fname)
+        if os.path.exists(fpath):
+            try:
+                os.remove(fpath)
+                return True, f"Partie {game_id} supprimée"
+            except Exception as e:
+                return False, f"Erreur suppression : {e}"
+        return False, "Fichier introuvable"
+
+    def export_pgn(self, game_id=None):
+        """Génère le texte PGN d'une partie (actuelle ou archivée)."""
+        if game_id:
+            fname = f"{game_id}.json" if not game_id.endswith(".json") else game_id
+            fpath = os.path.join(self.saved_games_dir, fname)
+            if not os.path.exists(fpath):
+                return None
+            with open(fpath, "r", encoding="utf-8") as f:
+                d = json.load(f)
+            history = d.get("move_history", [])
+            date_str = d.get("date_str", "2026.??.??")
+        else:
+            history = self.move_history
+            date_str = datetime.now().strftime("%Y.%m.%d")
+
+        pgn_lines = [
+            '[Event "Chess AR Vision Game"]',
+            '[Site "Chess AR Vision"]',
+            f'[Date "{date_str[:10]}"]',
+            '[White "Joueur"]',
+            '[Black "Bot AI"]',
+            f'[Result "{self.board.result() if self.board.is_game_over() else "*"}"]',
+            ""
+        ]
+
+        moves_text = []
+        for i, m in enumerate(history):
+            san = m.get("san", "")
+            if not san or san == "Position corrigée":
+                continue
+            if i % 2 == 0:
+                moves_text.append(f"{i // 2 + 1}. {san}")
+            else:
+                moves_text.append(f"{san}")
+
+        pgn_lines.append(" ".join(moves_text))
+        return "\n".join(pgn_lines)

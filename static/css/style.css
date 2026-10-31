@@ -225,7 +225,35 @@ header {
 .chess-sq.dark { background: #b58863; color: #111; }
 .chess-sq.highlight-from { background: #f6e05e !important; }
 .chess-sq.highlight-to { background: #68d391 !important; }
-.chess-sq.highlight-check { background: #fc8181 !important; }
+/* Roi en Échec (Orange vif pulsant) */
+.chess-sq.king-check {
+    background: radial-gradient(circle, #ff9800 0%, #f57c00 65%, #d84315 100%) !important;
+    color: #ffffff !important;
+    box-shadow: inset 0 0 8px rgba(255, 152, 0, 0.9), 0 0 12px rgba(255, 152, 0, 0.8) !important;
+    animation: pulse-king-check 1.2s infinite alternate ease-in-out;
+    z-index: 2;
+}
+
+/* Roi en Échec et Mat (Tout Rouge éclatant avec aura de fin de partie) */
+.chess-sq.king-checkmate {
+    background: radial-gradient(circle, #ff1744 0%, #d50000 60%, #b71c1c 100%) !important;
+    color: #ffffff !important;
+    box-shadow: inset 0 0 10px rgba(255, 23, 68, 1), 0 0 18px rgba(255, 23, 68, 0.9) !important;
+    outline: 2px solid #ff1744;
+    outline-offset: -2px;
+    animation: pulse-king-mat 0.9s infinite alternate ease-in-out;
+    z-index: 3;
+}
+
+@keyframes pulse-king-check {
+    0% { filter: drop-shadow(0 0 2px #ff9800); }
+    100% { filter: drop-shadow(0 0 8px #ff5722); }
+}
+
+@keyframes pulse-king-mat {
+    0% { transform: scale(0.97); filter: drop-shadow(0 0 4px #ff1744); }
+    100% { transform: scale(1.03); filter: drop-shadow(0 0 14px #d50000); }
+}
 
 .game-controls {
     display: flex;
@@ -283,3 +311,315 @@ header {
 .palette-btn { font-size: 1.1rem; padding: 2px 7px; }
 .palette-btn.active { background: #f59e0b; border-color: #fbbf24; color: #111; }
 .editor-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 6px; font-size: 0.8rem; }
+
+
+/* Bannière d'Alerte Échec / Échec et Mat & Victoire */
+.check-banner {
+    margin: 8px 12px;
+    padding: 10px 14px;
+    border-radius: 8px;
+    transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+}
+
+.check-banner.banner-check {
+    background: linear-gradient(135deg, rgba(245, 124, 0, 0.25) 0%, rgba(230, 81, 0, 0.15) 100%);
+    border: 1px solid #f57c00;
+    color: #ffb74d;
+    animation: slideDownBanner 0.35s ease-out;
+}
+
+.check-banner.banner-mat {
+    background: linear-gradient(135deg, rgba(213, 0, 0, 0.35) 0%, rgba(183, 28, 28, 0.25) 100%);
+    border: 2px solid #ff1744;
+    color: #ff8a80;
+    animation: victoryBounce 0.6s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+@keyframes slideDownBanner {
+    from { opacity: 0; transform: translateY(-8px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes victoryBounce {
+    0% { opacity: 0; transform: scale(0.92); }
+    60% { transform: scale(1.03); }
+    100% { opacity: 1; transform: scale(1); }
+}
+
+.banner-content {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.banner-icon {
+    font-size: 1.8rem;
+    line-height: 1;
+}
+
+.banner-text-group {
+    display: flex;
+    flex-direction: column;
+}
+
+.banner-title {
+    font-size: 1.05rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+}
+
+.banner-subtitle {
+    font-size: 0.82rem;
+    opacity: 0.9;
+    font-weight: 500;
+}
+
+/* Barre de Navigation dans l'Historique (façon Chess.com) */
+.history-nav-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 14px;
+    background: #0f172a;
+    border-top: 1px solid var(--border-color);
+}
+
+.hist-btn-group {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+}
+
+.btn-hist {
+    background: #1e293b;
+    border: 1px solid #334155;
+    color: #f1f5f9;
+    padding: 4px 10px;
+    font-size: 0.82rem;
+    font-weight: 700;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.btn-hist:hover:not(:disabled) {
+    background: #334155;
+    border-color: #475569;
+    color: #38bdf8;
+    transform: translateY(-1px);
+}
+
+.btn-hist:active:not(:disabled) {
+    transform: translateY(1px);
+}
+
+.btn-hist:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+}
+
+.btn-hist-live {
+    border-color: #0284c7;
+    background: #0369a1;
+    color: #fff;
+}
+
+.btn-hist-live.is-live {
+    background: #059669;
+    border-color: #10b981;
+}
+
+.hist-status {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: #94a3b8;
+}
+
+.live-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #ef4444;
+    display: inline-block;
+    box-shadow: 0 0 6px #ef4444;
+    animation: livePulse 1.5s infinite;
+}
+
+.live-dot.hist-mode {
+    background: #f59e0b;
+    box-shadow: 0 0 6px #f59e0b;
+    animation: none;
+}
+
+@keyframes livePulse {
+    0% { transform: scale(0.9); opacity: 0.7; }
+    50% { transform: scale(1.2); opacity: 1; }
+    100% { transform: scale(0.9); opacity: 0.7; }
+}
+
+/* Coups cliquables dans l'historique PGN */
+.move-item {
+    display: inline-block;
+    padding: 2px 5px;
+    margin: 1px 2px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+.move-item:hover {
+    background: #1e293b;
+    color: #38bdf8;
+}
+
+.move-item.active-move {
+    background: #0284c7;
+    color: #ffffff;
+    font-weight: bold;
+}
+
+
+/* Modale Gestionnaire de Parties Sauvegardées */
+.modal-backdrop {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background: rgba(4, 7, 15, 0.75);
+    backdrop-filter: blur(6px);
+    z-index: 1000;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    animation: fadeInModal 0.25s ease-out;
+}
+
+@keyframes fadeInModal {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+.modal-card {
+    background: #0f172a;
+    border: 1px solid #334155;
+    border-radius: 12px;
+    width: 90%;
+    max-width: 650px;
+    max-height: 85vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
+    overflow: hidden;
+    animation: scaleModal 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes scaleModal {
+    from { transform: scale(0.95); opacity: 0; }
+    to { transform: scale(1); opacity: 1; }
+}
+
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 14px 18px;
+    background: #1e293b;
+    border-bottom: 1px solid #334155;
+}
+
+.modal-header h3 {
+    margin: 0;
+    font-size: 1.1rem;
+    color: #f1f5f9;
+}
+
+.btn-close {
+    background: transparent;
+    border: none;
+    color: #94a3b8;
+    font-size: 1.2rem;
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 4px;
+    transition: all 0.15s ease;
+}
+
+.btn-close:hover {
+    color: #ef4444;
+    background: rgba(239, 68, 68, 0.1);
+}
+
+.modal-toolbar {
+    display: flex;
+    gap: 8px;
+    padding: 10px 18px;
+    background: #0b0f19;
+    border-bottom: 1px solid #1e293b;
+}
+
+.saved-games-container {
+    padding: 14px 18px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.saved-game-card {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 14px;
+    background: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 8px;
+    transition: all 0.2s ease;
+}
+
+.saved-game-card:hover {
+    border-color: #38bdf8;
+    background: #243248;
+    transform: translateY(-1px);
+}
+
+.saved-game-info {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.saved-game-title {
+    font-weight: 700;
+    font-size: 0.95rem;
+    color: #f8fafc;
+}
+
+.saved-game-meta {
+    font-size: 0.78rem;
+    color: #94a3b8;
+}
+
+.saved-game-preview {
+    font-family: monospace;
+    font-size: 0.75rem;
+    color: #38bdf8;
+    background: rgba(56, 189, 248, 0.08);
+    padding: 2px 6px;
+    border-radius: 4px;
+    display: inline-block;
+    max-width: 280px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.saved-game-actions {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+}

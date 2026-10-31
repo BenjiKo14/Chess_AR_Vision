@@ -1,0 +1,63 @@
+{
+  "calibrated_at": 1793466615.1185102,
+  "total_pastilles_found": 30,
+  "noise_sat_floor": 52.9,
+  "colors": {
+    "PIECE_W": {
+      "label": "VERT (Blancs Majeurs)",
+      "count_found": 7,
+      "h_med": 41.0,
+      "h_std": 7.1,
+      "h_min": 23,
+      "h_max": 58,
+      "s_med": 87.0,
+      "s_min": 25,
+      "v_med": 135.0,
+      "v_min": 74,
+      "area_med": 148.5,
+      "circ_med": 0.56
+    },
+    "PAWN_W": {
+      "label": "ROUGE (Pions Blancs)",
+      "count_found": 7,
+      "h_med": 10.0,
+      "h_std": 19.2,
+      "h_min": 0,
+      "h_max": 58,
+      "s_med": 146.0,
+      "s_min": 33,
+      "v_med": 148.0,
+      "v_min": 81,
+      "area_med": 182.5,
+      "circ_med": 0.58
+    },
+    "PAWN_B": {
+      "label": "VIOLET (Pions Noirs)",
+      "count_found": 8,
+      "h_med": 156.0,
+      "h_std": 9.5,
+      "h_min": 132,
+      "h_max": 179,
+      "s_med": 88.0,
+      "s_min": 32,
+      "v_med": 115.0,
+      "v_min": 63,
+      "area_med": 114.0,
+      "circ_med": 0.75
+    },
+    "PIECE_B": {
+      "label": "BLEU (Noirs Majeurs)",
+      "count_found": 8,
+      "h_med": 123.0,
+      "h_std": 4.4,
+      "h_min": 108,
+      "h_max": 138,
+      "s_med": 113.0,
+      "s_min": 35,
+      "v_med": 132.0,
+      "v_min": 72,
+      "area_med": 112.8,
+      "circ_med": 0.78
+    }
+  }
+}

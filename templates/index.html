@@ -57,7 +57,11 @@
 
                 <div class="toolbar">
                     <span style="font-size: 0.8rem; font-weight: 600; color: #38bdf8;">Calibration :</span>
-                    <button id="btn-auto-calib" class="btn btn-success">✨ Détection Auto</button>
+                    <button id="btn-auto-calib" class="btn btn-success" title="Lancer une détection du plateau d'échecs">🎯 Détection</button>
+                    <label class="checkbox-label" style="display: inline-flex; align-items: center; gap: 5px; margin-left: 4px; cursor: pointer; color: #38bdf8; font-size: 0.82rem; font-weight: 600;" title="Réajuste en permanence la détection toutes les 5 secondes (thread séparé)">
+                        <input type="checkbox" id="chk-continuous-calib" style="cursor: pointer; width: 16px; height: 16px;">
+                        <span>Continue</span>
+                    </label>
                     <select id="select-det-method" class="select-input" style="border-color: #38bdf8; font-weight: 600;" title="Méthode de détection">
                         <option value="COUPLED" selected>🔗 ArUco + Hough (Recommandé)</option>
                         <option value="ARUCO">🏷️ ArUco seul (Grille uniforme)</option>
@@ -69,7 +73,7 @@
                     <a href="/static/aruco/planche_aruco_imprimable.png" target="_blank" class="btn" style="color: #38bdf8; text-decoration: none;">🖨️ Imprimer ArUco</a>
                     <button id="btn-toggle-aruco" class="btn active" style="color: #4ade80;">🟩 Voir ArUco</button>
                     <button id="btn-toggle-grid" class="btn active"># Grille AR</button>
-                    <button id="btn-toggle-labels" class="btn active">🔤 Labels a-h</button>
+                    <button id="btn-toggle-labels" class="btn active" title="Affiche/masque les lettres (A-H), les chiffres (1-8) et le nom exact de chaque case (a1..h8) selon la vision IA">🏷️ Lettres & Chiffres</button>
                     <button id="btn-toggle-ar-arrow" class="btn active" style="border-color: #38bdf8; color: #38bdf8;">↗ Flèche AR</button>
                     <button id="btn-toggle-vision-debug" class="btn" style="border-color: #ec4899; color: #f472b6;" title="Affiche la vision ordinateur (carte thermique des contours et gradients qui détecte les pièces)">👁️ Vue IA</button>
                     <button id="btn-toggle-pieces" class="btn" style="border-color: #eab308; color: #fde047;" title="Affiche les pièces détectées (pastilles blanches et noires) directement sur l'écran caméra">⚪⚫ Pièces Détectées</button>
@@ -97,7 +101,7 @@
                         </span>
                         <div style="display: flex; gap: 6px; align-items: center;">
                             <span id="aruco-count-badge" class="badge badge-online" style="font-size: 0.75rem;">Marqueurs: --/4</span>
-                            <button id="btn-reset-det-config" class="btn" style="padding: 3px 8px; font-size: 0.75rem;">↺ Défaut Optimal</button>
+                            <button id="btn-reset-det-config" class="btn" style="padding: 3px 8px; font-size: 0.75rem;" title="Rétablir les valeurs optimales par défaut">↺ Défaut</button>
                         </div>
                     </div>
 
@@ -166,6 +170,73 @@
                             </select>
                         </div>
                     </div>
+
+                    <!-- Séparateur & Titre Section Pièces & Pastilles -->
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin: 12px 0 8px 0; padding-top: 8px; border-top: 1px solid #334155;">
+                        <span style="font-weight: 700; font-size: 0.85rem; color: #fde047;">
+                            ♟️ Calibration Détection des Pièces & Pastilles Couleurs
+                        </span>
+                        <div style="display: flex; gap: 6px; align-items: center;">
+                            <span id="pastille-count-badge" class="badge badge-online" style="font-size: 0.75rem;">Pastilles: --/32</span>
+                            <button id="btn-auto-calib-pieces" class="btn" style="border-color: #fde047; color: #fde047; padding: 3px 8px; font-size: 0.75rem;" title="Apprend automatiquement les 4 couleurs de pastilles (Vert, Rouge, Violet, Bleu) et la luminosité des cases sur la position initiale standard">🎯 Calibrer Couleurs Départ</button>
+                        </div>
+                    </div>
+
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; font-size: 0.78rem;">
+                        <!-- Mode Détection Pièces -->
+                        <div style="background: #1e293b; padding: 8px; border-radius: 6px;">
+                            <label for="cfg-piece-mode" style="font-weight: 600; color: #fde047; display: block; margin-bottom: 4px;">🛡️ Mode Pièces :</label>
+                            <select id="cfg-piece-mode" class="select-input" style="width: 100%;">
+                                <option value="PASTILLES_STRICT" selected>🟢 Pastilles Seules (Zéro faux positif, Recommandé)</option>
+                                <option value="HYBRID">⚪ Pastilles + État du Jeu (Hybride)</option>
+                            </select>
+                        </div>
+
+                        <!-- Slider : Taille Min Pastille -->
+                        <div style="background: #1e293b; padding: 8px; border-radius: 6px;">
+                            <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                                <label for="cfg-pastille-min-area" title="Taille minimale en pixels d'une pastille (rejette le micro-bruit)">🔍 Taille Min Pastille :</label>
+                                <strong id="val-pastille-min-area" style="color: #4ade80;">45 px</strong>
+                            </div>
+                            <input type="range" id="cfg-pastille-min-area" min="15" max="120" step="5" value="45" style="width: 100%; accent-color: #4ade80;">
+                        </div>
+
+                        <!-- Slider : Taille Max Pastille -->
+                        <div style="background: #1e293b; padding: 8px; border-radius: 6px;">
+                            <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                                <label for="cfg-pastille-max-area" title="Taille maximale d'une pastille (rejette les reflets larges et les cases vertes)">🔍 Taille Max Pastille :</label>
+                                <strong id="val-pastille-max-area" style="color: #4ade80;">320 px</strong>
+                            </div>
+                            <input type="range" id="cfg-pastille-max-area" min="150" max="600" step="10" value="320" style="width: 100%; accent-color: #4ade80;">
+                        </div>
+
+                        <!-- Slider : Circularité Min -->
+                        <div style="background: #1e293b; padding: 8px; border-radius: 6px;">
+                            <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                                <label for="cfg-pastille-min-circ" title="Circularité minimale (0=forme étirée/reflet, 1=cercle parfait)">⭕ Circularité Min :</label>
+                                <strong id="val-pastille-min-circ" style="color: #38bdf8;">0.52</strong>
+                            </div>
+                            <input type="range" id="cfg-pastille-min-circ" min="0.30" max="0.85" step="0.02" value="0.52" style="width: 100%; accent-color: #38bdf8;">
+                        </div>
+
+                        <!-- Slider : Saturation Min Couleur -->
+                        <div style="background: #1e293b; padding: 8px; border-radius: 6px;">
+                            <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                                <label for="cfg-pastille-min-sat" title="Pureté de la couleur (rejette les teintes délavées, le bois ou le gris)">🎨 Saturation Min Couleur :</label>
+                                <strong id="val-pastille-min-sat" style="color: #f43f5e;">40</strong>
+                            </div>
+                            <input type="range" id="cfg-pastille-min-sat" min="15" max="90" step="5" value="40" style="width: 100%; accent-color: #f43f5e;">
+                        </div>
+
+                        <!-- Slider : Correction Parallaxe 3D -->
+                        <div style="background: #1e293b; padding: 8px; border-radius: 6px;">
+                            <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                                <label for="cfg-parallax-scale" title="Compense l'inclinaison de la caméra (décale les sommets vers le sol)">📐 Parallaxe 3D Hauteur :</label>
+                                <strong id="val-parallax-scale" style="color: #a855f7;">1.00</strong>
+                            </div>
+                            <input type="range" id="cfg-parallax-scale" min="0.0" max="2.0" step="0.05" value="1.0" style="width: 100%; accent-color: #a855f7;">
+                        </div>
+                    </div>
                 </div>
             </div>
         </section>
@@ -214,6 +285,30 @@
                     </svg>
                 </div>
 
+                <!-- Bannière d'Alerte Échec / Échec et Mat & Victoire -->
+                <div id="check-alert-banner" class="check-banner" style="display: none;">
+                    <div class="banner-content">
+                        <span id="check-banner-icon" class="banner-icon">⚠️</span>
+                        <div class="banner-text-group">
+                            <span id="check-banner-title" class="banner-title">Échec au Roi !</span>
+                            <span id="check-banner-subtitle" class="banner-subtitle">Les Blancs sont en échec</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Barre de Navigation dans l'Historique (façon Chess.com) -->
+                <div class="history-nav-bar">
+                    <div class="hist-btn-group">
+                        <button id="btn-hist-start" class="btn btn-hist" title="Position initiale [Home]">|◀</button>
+                        <button id="btn-hist-prev" class="btn btn-hist" title="Coup précédent [Flèche Gauche]">◀</button>
+                        <button id="btn-hist-next" class="btn btn-hist" title="Coup suivant [Flèche Droite]">▶</button>
+                        <button id="btn-hist-end" class="btn btn-hist btn-hist-live" title="Position en Direct (Live) [End]">▶| Direct</button>
+                    </div>
+                    <div id="hist-status-text" class="hist-status">
+                        <span class="live-dot"></span> <span id="hist-status-label">En Direct</span>
+                    </div>
+                </div>
+
                 <div class="game-controls">
                     <button id="btn-new-game" class="btn btn-primary">🆕 Nouvelle Partie</button>
                     <button id="btn-confirm-setup" class="btn btn-success">✅ Valider Pièces Initiales</button>
@@ -221,6 +316,7 @@
                     <button id="btn-undo" class="btn">↩️ Annuler</button>
                     <button id="btn-hint" class="btn" style="border-color: #38bdf8;">💡 Indice AR</button>
                     <button id="btn-edit-position" class="btn" style="border-color: #f59e0b;" title="Corriger à la main la position si elle ne correspond pas au vrai échiquier">✏️ Corriger la position</button>
+                    <button id="btn-open-saved-games" class="btn" style="border-color: #818cf8; color: #818cf8;" title="Consulter l'historique de vos parties et restaurer une ancienne partie">📂 Parties sauvegardées</button>
                 </div>
 
                 <!-- Éditeur de position (affiché en mode correction) -->
@@ -304,5 +400,23 @@
 
     <script src="/static/js/app.js"></script>
     <script src="/static/js/position_editor.js"></script>
+
+    <!-- Modale Gestionnaire de Parties Sauvegardées & Archives -->
+    <div id="modal-saved-games" class="modal-backdrop" style="display: none;">
+        <div class="modal-card">
+            <div class="modal-header">
+                <h3>📁 Historique des Parties Sauvegardées</h3>
+                <button id="btn-close-saved-modal" class="btn-close" title="Fermer">✕</button>
+            </div>
+            <div class="modal-toolbar">
+                <button id="btn-save-current-checkpoint" class="btn btn-primary btn-sm">💾 Sauvegarder la partie en cours</button>
+                <button id="btn-refresh-saved-list" class="btn btn-sm">🔄 Rafraîchir</button>
+            </div>
+            <div id="saved-games-list" class="saved-games-container">
+                <div style="text-align: center; color: #94a3b8; padding: 20px;">Chargement des parties...</div>
+            </div>
+        </div>
+    </div>
+
 </body>
 </html>

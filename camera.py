@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 import time
 import threading
 from datetime import datetime
@@ -51,6 +52,43 @@ class CameraManager:
         # Hook processeur d'image (ex: ChessVisionManager.process_frame)
         self.frame_processor = None
         self.is_static_image = False
+
+        self._load_config()
+
+    def _load_config(self):
+        """Charge la configuration persistante de la caméra (rotation, miroir, index, etc.)."""
+        try:
+            p = Path("camera_config.json")
+            if p.exists():
+                with open(p, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                self.rotate_180 = bool(cfg.get("rotate_180", False))
+                self.flip_h = bool(cfg.get("flip_h", False))
+                self.show_crosshair = bool(cfg.get("show_crosshair", False))
+                self.active_filters = list(cfg.get("active_filters", []))
+                saved_idx = cfg.get("camera_index", None)
+                if saved_idx is not None and saved_idx != "photo":
+                    self.camera_index = int(saved_idx)
+                self.was_running = bool(cfg.get("was_running", True))
+        except Exception as e:
+            self.log(f"[WARN] Erreur chargement camera_config: {e}")
+
+    def _save_config(self):
+        """Sauvegarde la configuration persistante de la caméra."""
+        try:
+            saved_idx = self.camera_index if (self.camera_index is not None and self.camera_index != "photo") else 0
+            cfg = {
+                "rotate_180": self.rotate_180,
+                "flip_h": self.flip_h,
+                "show_crosshair": self.show_crosshair,
+                "active_filters": self.active_filters,
+                "camera_index": saved_idx,
+                "was_running": self.is_running
+            }
+            with open("camera_config.json", "w", encoding="utf-8") as f:
+                json.dump(cfg, f, indent=2)
+        except Exception as e:
+            self.log(f"[WARN] Erreur sauvegarde camera_config: {e}")
 
     def load_static_image(self, file_path_or_bytes):
         """Charge une image fixe (photo) à la place du flux webcam."""
@@ -234,6 +272,7 @@ class CameraManager:
 
             self._thread = threading.Thread(target=self._capture_loop, daemon=True)
             self._thread.start()
+            self._save_config()
             self.log(f"✅ Caméra {index} active ({self.width}x{self.height})")
             return True, None
 
@@ -310,10 +349,10 @@ class CameraManager:
                 pass
             self.cap = None
         self.is_running = False
-        self.camera_index = None
         self._latest_display_jpeg = None
         self.fps = 0.0
         self.is_static_image = False
+        self._save_config()
 
     def stop(self):
         with self._lock:
@@ -347,6 +386,7 @@ class CameraManager:
                 self.show_crosshair = bool(show_crosshair)
             if active_filters is not None:
                 self.active_filters = list(active_filters)
+            self._save_config()
             return self.get_status()
 
     def take_snapshot(self, save_dir="snapshots"):

@@ -49,6 +49,19 @@ camera_mgr = CameraManager(log_fn=log)
 vision_mgr = ChessVisionManager(log_fn=log)
 camera_mgr.frame_processor = vision_mgr.process_frame
 
+# Reconnexion automatique de la caméra sauvegardée (index, rotation 180, miroir)
+try:
+    if getattr(camera_mgr, 'was_running', True):
+        saved_idx = getattr(camera_mgr, 'camera_index', 0)
+        if saved_idx is not None and saved_idx != "photo":
+            log(f"📷 Reconnexion automatique caméra {saved_idx} (180°={camera_mgr.rotate_180}, Miroir={camera_mgr.flip_h})...")
+            ok_cam, err_cam = camera_mgr.start(index=saved_idx)
+            if not ok_cam and saved_idx != 0:
+                log(f"[WARN] Caméra {saved_idx} non joignable ({err_cam}), repli caméra 0...")
+                camera_mgr.start(index=0)
+except Exception as e:
+    log(f"[WARN] Erreur démarrage auto caméra: {e}")
+
 engine_mgr = ChessEngineManager(log_fn=log)
 game_mgr = ChessGameManager(vision_mgr, engine_mgr, log_fn=log)
 robot_bridge = RobotChessBridge(log_fn=log)
@@ -152,10 +165,51 @@ def camera_upload_photo():
 def serve_snapshot(filename):
     return send_from_directory('snapshots', filename)
 
+def continuous_detection_worker():
+    while True:
+        time.sleep(1.0)
+        if not getattr(vision_mgr, 'continuous_detection', False):
+            continue
+        now = time.time()
+        last_time = getattr(vision_mgr, 'last_continuous_detection_time', 0.0)
+        if now - last_time < 5.0:
+            continue
+        if not camera_mgr.is_running:
+            continue
+        raw_frame = camera_mgr.get_raw_frame()
+        if raw_frame is None:
+            continue
+        # Ne pas réajuster si la main est au-dessus du plateau ou si un coup est en cours de validation
+        if not vision_mgr.is_board_stable or getattr(game_mgr, 'consecutive_match_count', 0) > 0:
+            continue
+        try:
+            old_version = vision_mgr.geometry_version
+            ok, msg, corners = vision_mgr.auto_detect_board(raw_frame)
+            vision_mgr.last_continuous_detection_time = time.time()
+            # Logger seulement si un recalage réel a eu lieu
+            if ok and vision_mgr.geometry_version != old_version:
+                log(f"[Auto-Detection Continue 5s - Recalage] {msg}")
+        except Exception as e:
+            log(f"[Auto-Detection Continue Erreur] {e}")
+
+continuous_thread = threading.Thread(target=continuous_detection_worker, daemon=True)
+continuous_thread.start()
+
 # --- Routes Vision & Calibration (Slice 1 & 2) ---
 @app.route('/api/vision/status')
 def vision_status():
     return jsonify({'success': True, **vision_mgr.get_status()})
+
+@app.route('/api/vision/continuous-detection', methods=['POST'])
+def vision_continuous_detection():
+    data = request.get_json(silent=True) or {}
+    enabled = bool(data.get('enabled', False))
+    vision_mgr.continuous_detection = enabled
+    if enabled:
+        vision_mgr.last_continuous_detection_time = 0.0
+    vision_mgr.save_calibration()
+    log(f"[Vision] Détection continue (5s) : {'ACTIVÉE' if enabled else 'DÉSACTIVÉE'}")
+    return jsonify({'success': True, 'enabled': vision_mgr.continuous_detection})
 
 @app.route('/api/vision/auto-calibrate', methods=['POST'])
 def vision_auto_calibrate():
@@ -175,6 +229,18 @@ def vision_detection_config():
     data = request.get_json(silent=True) or {}
     raw_frame = camera_mgr.get_raw_frame()
     cfg = vision_mgr.update_detection_config(data, raw_frame=raw_frame)
+    return jsonify({
+        'success': True,
+        'config': cfg,
+        'corners': vision_mgr.corners_norm,
+        'detected_aruco_ids': sorted(list(vision_mgr.last_detected_markers.keys())),
+        'status': vision_mgr.get_status()
+    })
+
+@app.route('/api/vision/detection-config/reset', methods=['POST'])
+def vision_detection_config_reset():
+    raw_frame = camera_mgr.get_raw_frame()
+    cfg = vision_mgr.reset_detection_config_to_defaults(raw_frame=raw_frame)
     return jsonify({
         'success': True,
         'config': cfg,
@@ -217,7 +283,19 @@ def vision_overlay_settings():
         vision_mgr.show_warped_arrow = bool(data['show_warped_arrow'])
     if 'show_aruco_debug' in data:
         vision_mgr.show_aruco_debug = bool(data['show_aruco_debug'])
+    vision_mgr.save_calibration()
     return jsonify({'success': True, 'status': vision_mgr.get_status()})
+
+@app.route('/api/vision/auto-calibrate-pieces', methods=['POST'])
+def vision_auto_calibrate_pieces():
+    warped = vision_mgr.get_latest_warped_frame()
+    if warped is None:
+        return jsonify({'success': False, 'error': 'Aucune image webcam disponible'}), 400
+    from piece_auto_calibrator import auto_calibrator
+    cur_padded = getattr(vision_mgr, 'get_latest_warped_padded', lambda: None)()
+    p_center = getattr(vision_mgr, 'get_perspective_center', lambda: None)()
+    ok, msg, summary = auto_calibrator.calibrate_from_starting_board(warped, warped_padded=cur_padded, center_xy=p_center)
+    return jsonify({'success': ok, 'message': msg, 'summary': summary})
 
 @app.route('/api/vision/warped_stream')
 def vision_warped_stream():
@@ -254,6 +332,12 @@ def game_new():
 @app.route('/api/game/confirm-setup', methods=['POST'])
 def game_confirm_setup():
     ok, msg = game_mgr.confirm_setup()
+    if ok:
+        warped = vision_mgr.get_latest_warped_frame()
+        if warped is not None:
+            ok_ds, msg_ds, count_ds = dataset_collector.save_labeled_board(warped, game_mgr.board)
+            if ok_ds:
+                log(f"📸 Dataset : {count_ds} cases capturées et enregistrées")
     return jsonify({'success': ok, 'message': msg, 'game': game_mgr.get_status()})
 
 @app.route('/api/game/resync-reference', methods=['POST'])
@@ -272,6 +356,13 @@ def game_manual_move():
 def game_set_position():
     data = request.get_json(silent=True) or {}
     ok, msg = game_mgr.set_position(data.get('fen', '').strip())
+    if ok:
+        warped = vision_mgr.get_latest_warped_frame()
+        if warped is not None:
+            ok_ds, msg_ds, count_ds = dataset_collector.save_labeled_board(warped, game_mgr.board)
+            if ok_ds:
+                log(f"📸 Dataset : {count_ds} cases capturées et enregistrées")
+                msg = f"{msg} (📸 {count_ds} cases capturées pour le dataset)"
     return jsonify({'success': ok, 'message': msg, 'game': game_mgr.get_status()}), (200 if ok else 400)
 
 @app.route('/api/game/undo', methods=['POST'])
@@ -294,6 +385,42 @@ def game_hint():
         }
         return jsonify({'success': True, 'hint': hint_res})
     return jsonify({'success': False, 'error': 'Aucun conseil disponible'}), 400
+
+@app.route('/api/game/saved', methods=['GET'])
+def game_saved_list():
+    games = game_mgr.list_saved_games()
+    return jsonify({'success': True, 'games': games})
+
+@app.route('/api/game/saved/load', methods=['POST'])
+def game_saved_load():
+    data = request.get_json(silent=True) or {}
+    game_id = data.get('game_id')
+    if not game_id:
+        return jsonify({'success': False, 'error': 'ID de partie manquant'}), 400
+    ok, msg = game_mgr.load_saved_game_by_id(game_id)
+    return jsonify({'success': ok, 'message': msg, 'game': game_mgr.get_status()}), (200 if ok else 400)
+
+@app.route('/api/game/saved/delete', methods=['POST'])
+def game_saved_delete():
+    data = request.get_json(silent=True) or {}
+    game_id = data.get('game_id')
+    if not game_id:
+        return jsonify({'success': False, 'error': 'ID de partie manquant'}), 400
+    ok, msg = game_mgr.delete_saved_game_by_id(game_id)
+    return jsonify({'success': ok, 'message': msg})
+
+@app.route('/api/game/saved/export-pgn', methods=['GET'])
+def game_saved_export_pgn():
+    game_id = request.args.get('game_id')
+    pgn_text = game_mgr.export_pgn(game_id)
+    if not pgn_text:
+        return jsonify({'success': False, 'error': 'Partie introuvable ou vide'}), 404
+    return Response(pgn_text, mimetype='text/plain', headers={'Content-Disposition': f'attachment; filename={game_id or "game"}.pgn'})
+
+@app.route('/api/game/saved/save-checkpoint', methods=['POST'])
+def game_saved_checkpoint():
+    game_mgr._save_game()
+    return jsonify({"success": True, "message": "Partie sauvegardée dans l'archive avec succès", "game_id": game_mgr.current_game_id})
 
 @app.route('/api/engine/settings', methods=['POST'])
 def engine_settings():

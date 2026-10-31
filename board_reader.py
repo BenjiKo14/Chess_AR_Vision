@@ -16,10 +16,25 @@ Le modèle est ré-appris sur chaque image à partir de la position connue de la
 il s'adapte tout seul à la lumière et à la caméra. Les quelques cases qui ont réellement
 changé (un coup joué) sont mal étiquetées : apprentissage robuste (médianes) en deux
 passes, la seconde sans les cases qui contredisent nettement leur étiquette.
+
+INTÉGRATION PASTILLES DE COULEURS :
+- Pions noirs : pastilles VIOLETTES
+- Pièces rang 1 noir : pastilles BLEUES
+- Pions blancs : pastilles ROUGES
+- Pièces rang 8 blanc : pastilles VERTES
+En présence d'une pastille clairement détectée sur une case, la probabilité de la
+couleur correspondante est portée à >= 0.95.
 """
 import cv2
 import numpy as np
 import chess
+from pastille_detector import (
+    detect_pastilles_by_square,
+    PASTILLE_PAWN_B,
+    PASTILLE_PIECE_B,
+    PASTILLE_PAWN_W,
+    PASTILLE_PIECE_W
+)
 
 SQ = 64          # taille d'une case dans l'image redressée
 MARGIN = 10      # on ignore les bords de case (lignes du damier)
@@ -68,6 +83,7 @@ def _student_ll(x, m, sd):
 class BoardReader:
     def __init__(self):
         self.last_probs = None
+        self.last_pastilles = {}
 
     # --- Caractéristiques ---------------------------------------------------------
 
@@ -171,7 +187,7 @@ class BoardReader:
         probs = np.clip(probs, P_MIN, P_MAX)
         return probs / probs.sum(axis=1, keepdims=True)
 
-    def read(self, warped, board):
+    def read(self, warped, board, center_xy=None, warped_padded=None, config=None):
         """Probabilités (64, 3) pour E, W, B, indexées par case python-chess."""
         labels = {s: _label(board, s) for s in chess.SQUARES}
         idx = {c: i for i, c in enumerate(CLASSES)}
@@ -184,5 +200,45 @@ class BoardReader:
         if suspects:
             use = {s: s not in suspects for s in chess.SQUARES}
             probs = self._probs(warped, board, labels, use, exclude=suspects)
+
+        # Intégration des pastilles de couleur (y compris celles débordant du quadrillage via warped_padded)
+        pastille_src = warped_padded if warped_padded is not None else warped
+        pastilles = detect_pastilles_by_square(pastille_src, center_xy=center_xy, config=config)
+        self.last_pastilles = pastilles
+        for sq, p in pastilles.items():
+            if p.type in (PASTILLE_PAWN_B, PASTILLE_PIECE_B):
+                # Pièce Noire (pion violet ou pièce bleue) : confirmation forte
+                probs[sq, 0] = min(probs[sq, 0], 0.04)
+                probs[sq, 1] = min(probs[sq, 1], 0.04)
+                probs[sq, 2] = max(probs[sq, 2], 0.92)
+            elif p.type in (PASTILLE_PAWN_W, PASTILLE_PIECE_W):
+                # Pièce Blanche (pion rouge ou pièce verte) : confirmation forte
+                probs[sq, 0] = min(probs[sq, 0], 0.04)
+                probs[sq, 1] = max(probs[sq, 1], 0.92)
+                probs[sq, 2] = min(probs[sq, 2], 0.04)
+            total = probs[sq].sum()
+            if total > 0:
+                probs[sq] /= total
+
+        # Pour les cases SANS pastille lorsque des pastilles sont actives :
+        # Empêche qu'une ombre projetée (ex. lampe à côté ou grande pièce) ne soit classée
+        # faussement comme une pièce noire. Une case sans pastille est très probablement vide.
+        cfg = config or {}
+        strict_pastilles = (cfg.get('piece_mode') == 'PASTILLES_STRICT') or (len(pastilles) >= 8)
+        if strict_pastilles:
+            for sq in chess.SQUARES:
+                if sq not in pastilles:
+                    if board.piece_at(sq) is None:
+                        # Case attendue vide et sans pastille : confirmation vide forte
+                        probs[sq, 0] = max(probs[sq, 0], 0.88)
+                        probs[sq, 1] = min(probs[sq, 1], 0.06)
+                        probs[sq, 2] = min(probs[sq, 2], 0.06)
+                    else:
+                        # Case qui avait une pièce mais n'a plus de pastille (pièce partie)
+                        probs[sq, 0] = max(probs[sq, 0], 0.82)
+                        probs[sq, 1] = min(probs[sq, 1], 0.09)
+                        probs[sq, 2] = min(probs[sq, 2], 0.09)
+                    probs[sq] /= probs[sq].sum()
+
         self.last_probs = probs
         return probs

@@ -1,179 +1,50 @@
 {
-  "fen": "r1bqkb1r/pppp2pB/4p3/3n2N1/8/2P4P/PP1N1PP1/R2QK2R b KQkq - 0 12",
+  "game_id": "game_20261031_181014",
+  "date_str": "31/10/2026 18:11:48",
+  "fen": "r1bqkbnr/pppppppp/2n5/8/3P4/5N2/PPP1PPPP/RNBQKB1R b KQkq - 2 2",
   "state": "WAIT_BOT_THINKING",
-  "last_move": null,
+  "last_move": "g1f3",
+  "initial_fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
   "move_history": [
     {
       "num": 1,
       "uci": "d2d4",
       "san": "d4",
       "player": "human",
-      "fen": "rnbqkbnr/pppppppp/8/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq - 0 1"
+      "fen": "rnbqkbnr/pppppppp/8/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq - 0 1",
+      "turn": "black",
+      "is_check": false,
+      "is_checkmate": false,
+      "check_square": null,
+      "winner": null
     },
     {
       "num": 2,
-      "uci": "b8a6",
-      "san": "Na6",
+      "uci": "b8c6",
+      "san": "Nc6",
       "player": "bot",
-      "fen": "r1bqkbnr/pppppppp/n7/8/3P4/8/PPP1PPPP/RNBQKBNR w KQkq - 1 2"
+      "fen": "r1bqkbnr/pppppppp/2n5/8/3P4/8/PPP1PPPP/RNBQKBNR w KQkq - 1 2",
+      "turn": "white",
+      "is_check": false,
+      "is_checkmate": false,
+      "check_square": null,
+      "winner": null
     },
     {
       "num": 3,
-      "uci": "e2e4",
-      "san": "e4",
-      "player": "human",
-      "fen": "r1bqkbnr/pppppppp/n7/8/3PP3/8/PPP2PPP/RNBQKBNR b KQkq - 0 2"
-    },
-    {
-      "num": 4,
-      "uci": "a6b4",
-      "san": "Nb4",
-      "player": "bot",
-      "fen": "r1bqkbnr/pppppppp/8/8/1n1PP3/8/PPP2PPP/RNBQKBNR w KQkq - 1 3"
-    },
-    {
-      "num": 5,
-      "uci": "c2c3",
-      "san": "c3",
-      "player": "human",
-      "fen": "r1bqkbnr/pppppppp/8/8/1n1PP3/2P5/PP3PPP/RNBQKBNR b KQkq - 0 3"
-    },
-    {
-      "num": 6,
-      "uci": "b4c6",
-      "san": "Nc6",
-      "player": "bot",
-      "fen": "r1bqkbnr/pppppppp/2n5/8/3PP3/2P5/PP3PPP/RNBQKBNR w KQkq - 1 4"
-    },
-    {
-      "num": 7,
-      "uci": "d4d5",
-      "san": "d5",
-      "player": "human",
-      "fen": "r1bqkbnr/pppppppp/2n5/3P4/4P3/2P5/PP3PPP/RNBQKBNR b KQkq - 0 4"
-    },
-    {
-      "num": 8,
-      "uci": "c6e5",
-      "san": "Ne5",
-      "player": "bot",
-      "fen": "r1bqkbnr/pppppppp/8/3Pn3/4P3/2P5/PP3PPP/RNBQKBNR w KQkq - 1 5"
-    },
-    {
-      "num": 9,
       "uci": "g1f3",
       "san": "Nf3",
       "player": "human",
-      "fen": "r1bqkbnr/pppppppp/8/3Pn3/4P3/2P2N2/PP3PPP/RNBQKB1R b KQkq - 2 5"
-    },
-    {
-      "num": 1,
-      "uci": "e5g4",
-      "san": "Ng4",
-      "player": "bot",
-      "fen": "r1bqkbnr/pppppppp/8/3P4/4P1n1/2P2N2/PP3PPP/RNBQKB1R w KQkq - 3 6"
-    },
-    {
-      "num": 2,
-      "uci": "h2h3",
-      "san": "h3",
-      "player": "human",
-      "fen": "r1bqkbnr/pppppppp/8/3P4/4P1n1/2P2N1P/PP3PP1/RNBQKB1R b KQkq - 0 6"
-    },
-    {
-      "num": 3,
-      "uci": "g4f6",
-      "san": "N4f6",
-      "player": "bot",
-      "fen": "r1bqkbnr/pppppppp/5n2/3P4/4P3/2P2N1P/PP3PP1/RNBQKB1R w KQkq - 1 7"
-    },
-    {
-      "num": 4,
-      "uci": "c1g5",
-      "san": "Bg5",
-      "player": "human",
-      "fen": "r1bqkbnr/pppppppp/5n2/3P2B1/4P3/2P2N1P/PP3PP1/RN1QKB1R b KQkq - 2 7"
-    },
-    {
-      "num": 5,
-      "uci": "f6e4",
-      "san": "Nxe4",
-      "player": "bot",
-      "fen": "r1bqkbnr/pppppppp/8/3P2B1/4n3/2P2N1P/PP3PP1/RN1QKB1R w KQkq - 0 8"
-    },
-    {
-      "num": 6,
-      "uci": "b1d2",
-      "san": "Nbd2",
-      "player": "human",
-      "fen": "r1bqkbnr/pppppppp/8/3P2B1/4n3/2P2N1P/PP1N1PP1/R2QKB1R b KQkq - 1 8"
-    },
-    {
-      "num": 7,
-      "uci": "e4g5",
-      "san": "Nxg5",
-      "player": "bot",
-      "fen": "r1bqkbnr/pppppppp/8/3P2n1/8/2P2N1P/PP1N1PP1/R2QKB1R w KQkq - 0 9"
-    },
-    {
-      "num": 8,
-      "uci": "f3g5",
-      "san": "Nxg5",
-      "player": "human",
-      "fen": "r1bqkbnr/pppppppp/8/3P2N1/8/2P4P/PP1N1PP1/R2QKB1R b KQkq - 0 9"
-    },
-    {
-      "num": 9,
-      "uci": "f7f5",
-      "san": "f5",
-      "player": "bot",
-      "fen": "r1bqkbnr/ppppp1pp/8/3P1pN1/8/2P4P/PP1N1PP1/R2QKB1R w KQkq - 0 10"
-    },
-    {
-      "num": 10,
-      "uci": "f1d3",
-      "san": "Bd3",
-      "player": "human",
-      "fen": "r1bqkbnr/ppppp1pp/8/3P1pN1/8/2PB3P/PP1N1PP1/R2QK2R b KQkq - 1 10"
-    },
-    {
-      "num": 11,
-      "uci": "g8f6",
-      "san": "Nf6",
-      "player": "bot",
-      "fen": "r1bqkb1r/ppppp1pp/5n2/3P1pN1/8/2PB3P/PP1N1PP1/R2QK2R w KQkq - 2 11"
-    },
-    {
-      "num": 12,
-      "uci": "d3f5",
-      "san": "Bxf5",
-      "player": "human",
-      "fen": "r1bqkb1r/ppppp1pp/5n2/3P1BN1/8/2P4P/PP1N1PP1/R2QK2R b KQkq - 0 11"
-    },
-    {
-      "num": 13,
-      "uci": "e7e6",
-      "san": "e6",
-      "player": "bot",
-      "fen": "r1bqkb1r/pppp2pp/4pn2/3P1BN1/8/2P4P/PP1N1PP1/R2QK2R w KQkq - 0 12"
-    },
-    {
-      "num": 14,
-      "uci": "f5g4",
-      "san": "Bg4",
-      "player": "human",
-      "fen": "r1bqkb1r/pppp2pp/4pn2/3P2N1/6B1/2P4P/PP1N1PP1/R2QK2R b KQkq - 1 12"
-    },
-    {
-      "num": "✏️",
-      "uci": "",
-      "san": "Position corrigée",
-      "player": "manuel",
-      "fen": "r1bqkb1r/pppp2pB/4p3/3n2N1/8/2P4P/PP1N1PP1/R2QK2R b KQkq - 0 12"
+      "fen": "r1bqkbnr/pppppppp/2n5/8/3P4/5N2/PPP1PPPP/RNBQKB1R b KQkq - 2 2",
+      "turn": "black",
+      "is_check": false,
+      "is_checkmate": false,
+      "check_square": null,
+      "winner": null
     }
   ],
   "engine_mode": "HUMAN_VS_BOT",
   "human_color": true,
   "bot_elo": 1200,
-  "saved_at": 1793444159.8586705
+  "saved_at": 1793466708.6996212
 }
