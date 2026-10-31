@@ -120,6 +120,12 @@ header {
 }
 
 .btn:hover { background: #334155; }
+.btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    pointer-events: none;
+    filter: grayscale(60%);
+}
 .btn-primary { background: #0284c7; border-color: #38bdf8; color: #fff; }
 .btn-primary:hover { background: #0369a1; }
 .btn-success { background: #16a34a; border-color: #22c55e; color: #fff; }
@@ -263,3 +269,17 @@ header {
     max-height: 120px;
     overflow-y: auto;
 }
+
+/* Éditeur de position (correction manuelle) */
+.chess-board-grid.editing { border-color: #f59e0b; }
+.chess-sq.edit-picked { outline: 3px solid #f59e0b; outline-offset: -3px; }
+.position-editor {
+    padding: 8px 14px;
+    background: #0f172a;
+    border-top: 1px solid var(--border-color);
+}
+.editor-hint { font-size: 0.75rem; color: #94a3b8; margin-bottom: 6px; }
+.editor-palette { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
+.palette-btn { font-size: 1.1rem; padding: 2px 7px; }
+.palette-btn.active { background: #f59e0b; border-color: #fbbf24; color: #111; }
+.editor-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 6px; font-size: 0.8rem; }

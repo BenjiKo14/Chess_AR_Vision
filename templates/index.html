@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Chess AR Vision — Salon & Bras Robot</title>
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
     <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body>
@@ -41,9 +42,10 @@
                     <button id="btn-rotate-cam" class="btn">🔄 180°</button>
                     <button id="btn-flip-cam" class="btn">↔ Miroir</button>
                     <button id="btn-snapshot" class="btn">📸 Snapshot</button>
+                    <button id="btn-toggle-filters" class="btn" style="border-color: #a855f7; color: #d8b4fe;" title="Afficher/Masquer les filtres d'image">🎨 Filtres ▾</button>
                 </div>
 
-                <div class="toolbar">
+                <div id="filters-toolbar" class="toolbar" style="display: none; background: #131d33;">
                     <span style="font-size: 0.8rem; font-weight: 600; color: #a855f7;">Filtres Cumulables :</span>
                     <button id="btn-filter-reset" class="btn" style="color: #94a3b8;">✖ Réinitialiser (Couleur)</button>
                     <button class="btn btn-filter" data-filter="clahe">✨ CLAHE (Contraste local)</button>
@@ -56,10 +58,10 @@
                 <div class="toolbar">
                     <span style="font-size: 0.8rem; font-weight: 600; color: #38bdf8;">Calibration :</span>
                     <button id="btn-auto-calib" class="btn btn-success">✨ Détection Auto</button>
-                    <select id="select-det-method" class="select-input" style="border-color: #38bdf8; font-weight: 600;" title="Méthode de détection des coins">
-                        <option value="COUPLED" selected>🔗 Couplé (ArUco + Hough)</option>
-                        <option value="ARUCO">🏷️ ArUco seul</option>
-                        <option value="HOUGH">📐 Hough seul (Lignes)</option>
+                    <select id="select-det-method" class="select-input" style="border-color: #38bdf8; font-weight: 600;" title="Méthode de détection">
+                        <option value="COUPLED" selected>🔗 ArUco + Hough (Recommandé)</option>
+                        <option value="ARUCO">🏷️ ArUco seul (Grille uniforme)</option>
+                        <option value="HOUGH">📐 Hough seul (Sans marqueurs)</option>
                     </select>
                     <button id="btn-guide-4pts" class="btn" style="border-color: #f59e0b; color: #fbbf24;">🎯 Pointer 4 Clics</button>
                     <button id="btn-edit-corners" class="btn">📐 Ajuster (Manuel)</button>
@@ -67,11 +69,10 @@
                     <a href="/static/aruco/planche_aruco_imprimable.png" target="_blank" class="btn" style="color: #38bdf8; text-decoration: none;">🖨️ Imprimer ArUco</a>
                     <button id="btn-toggle-aruco" class="btn active" style="color: #4ade80;">🟩 Voir ArUco</button>
                     <button id="btn-toggle-grid" class="btn active"># Grille AR</button>
-                    <label class="btn" style="display: inline-flex; align-items: center; gap: 5px; border-color: #22d3ee; color: #22d3ee; cursor: pointer;" title="Avec : les lignes internes sont calées sur les vraies séparations de cases (le contour ne bouge pas). Sans : quadrillage uniforme 8x8.">
-                        <input type="checkbox" id="chk-hough-toolbar" class="hough-toggle" checked style="accent-color: #22d3ee; cursor: pointer;"> 📐 Avec Hough
-                    </label>
                     <button id="btn-toggle-labels" class="btn active">🔤 Labels a-h</button>
                     <button id="btn-toggle-ar-arrow" class="btn active" style="border-color: #38bdf8; color: #38bdf8;">↗ Flèche AR</button>
+                    <button id="btn-toggle-vision-debug" class="btn" style="border-color: #ec4899; color: #f472b6;" title="Affiche la vision ordinateur (carte thermique des contours et gradients qui détecte les pièces)">👁️ Vue IA</button>
+                    <button id="btn-toggle-pieces" class="btn" style="border-color: #eab308; color: #fde047;" title="Affiche les pièces détectées (pastilles blanches et noires) directement sur l'écran caméra">⚪⚫ Pièces Détectées</button>
                     <button id="btn-toggle-console" class="btn" style="border-color: #a855f7; color: #d8b4fe;">🎛️ Console Config ▾</button>
                 </div>
 
@@ -155,22 +156,13 @@
                             <input type="range" id="cfg-border-err" min="0.20" max="0.95" step="0.05" value="0.85" style="width: 100%; accent-color: #f43f5e;">
                         </div>
 
-                        <!-- Option 7 : Calage Subpixel par Transformée de Hough -->
-                        <div style="background: #1e293b; padding: 8px; border-radius: 6px; display: flex; align-items: center; justify-content: space-between;">
-                            <div>
-                                <label for="cfg-use-hough" style="font-weight: 600; color: #38bdf8; cursor: pointer;">📐 Lignes Internes Hough (Subpixel)</label>
-                                <div style="font-size: 0.7rem; color: #94a3b8;">Ajuste le quadrillage interne sans déplacer le contour</div>
-                            </div>
-                            <input type="checkbox" id="cfg-use-hough" class="hough-toggle" checked style="width: 18px; height: 18px; accent-color: #38bdf8; cursor: pointer;">
-                        </div>
-
-                        <!-- Option 8 : Choix de la méthode de détection des coins -->
+                        <!-- Option 7 : Choix de la méthode de détection -->
                         <div style="background: #1e293b; padding: 8px; border-radius: 6px;">
-                            <label for="cfg-det-method" style="font-weight: 600; color: #d8b4fe; display: block; margin-bottom: 4px;">🎯 Méthode Détection Coins :</label>
+                            <label for="cfg-det-method" style="font-weight: 600; color: #d8b4fe; display: block; margin-bottom: 4px;">🎯 Méthode Détection :</label>
                             <select id="cfg-det-method" class="select-input" style="width: 100%;">
-                                <option value="COUPLED" selected>🔗 Couplé (ArUco + Hough)</option>
-                                <option value="ARUCO">🏷️ ArUco seul (+ Inset)</option>
-                                <option value="HOUGH">📐 Hough seul (Lignes damier)</option>
+                                <option value="COUPLED" selected>🔗 ArUco + Hough (Recommandé)</option>
+                                <option value="ARUCO">🏷️ ArUco seul (Grille uniforme)</option>
+                                <option value="HOUGH">📐 Hough seul (Sans marqueurs)</option>
                             </select>
                         </div>
                     </div>
@@ -186,9 +178,6 @@
                     <h2>🔍 Vue Plateau Redressée (Perspective Transform 512×512)</h2>
                     <div style="display: flex; gap: 6px;">
                         <button id="btn-toggle-warped-grid" class="btn active" style="padding: 2px 8px; font-size: 0.75rem;"># Grille</button>
-                        <label class="btn" style="padding: 2px 8px; font-size: 0.75rem; display: inline-flex; align-items: center; gap: 4px; border-color: #22d3ee; color: #22d3ee; cursor: pointer;">
-                            <input type="checkbox" id="chk-hough-warped" class="hough-toggle" checked style="accent-color: #22d3ee; cursor: pointer;"> Hough
-                        </label>
                         <button id="btn-toggle-warped-arrow" class="btn active" style="padding: 2px 8px; font-size: 0.75rem; border-color: #38bdf8; color: #38bdf8;">↗ Flèche</button>
                     </div>
                 </div>
@@ -231,6 +220,41 @@
                     <button id="btn-resync" class="btn">📸 Resync (J'adoube)</button>
                     <button id="btn-undo" class="btn">↩️ Annuler</button>
                     <button id="btn-hint" class="btn" style="border-color: #38bdf8;">💡 Indice AR</button>
+                    <button id="btn-edit-position" class="btn" style="border-color: #f59e0b;" title="Corriger à la main la position si elle ne correspond pas au vrai échiquier">✏️ Corriger la position</button>
+                </div>
+
+                <!-- Éditeur de position (affiché en mode correction) -->
+                <div id="position-editor" class="position-editor" style="display: none;">
+                    <div class="editor-hint">Cliquez une pièce puis une case pour la déplacer, ou choisissez une pièce ci-dessous puis cliquez les cases. Clic droit = effacer.</div>
+                    <div class="editor-palette" id="editor-palette">
+                        <button class="btn palette-btn active" data-tool="move" title="Déplacer">✋</button>
+                        <button class="btn palette-btn" data-tool="x" title="Effacer">🧽</button>
+                        <button class="btn palette-btn" data-tool="K">♔</button>
+                        <button class="btn palette-btn" data-tool="Q">♕</button>
+                        <button class="btn palette-btn" data-tool="R">♖</button>
+                        <button class="btn palette-btn" data-tool="B">♗</button>
+                        <button class="btn palette-btn" data-tool="N">♘</button>
+                        <button class="btn palette-btn" data-tool="P">♙</button>
+                        <button class="btn palette-btn" data-tool="k">♚</button>
+                        <button class="btn palette-btn" data-tool="q">♛</button>
+                        <button class="btn palette-btn" data-tool="r">♜</button>
+                        <button class="btn palette-btn" data-tool="b">♝</button>
+                        <button class="btn palette-btn" data-tool="n">♞</button>
+                        <button class="btn palette-btn" data-tool="p">♟</button>
+                    </div>
+                    <div class="editor-row">
+                        <label for="editor-turn">Trait :</label>
+                        <select id="editor-turn" class="select-input">
+                            <option value="w">Blancs à jouer</option>
+                            <option value="b">Noirs à jouer</option>
+                        </select>
+                        <button id="btn-editor-start" class="btn" title="Position de départ">♟️ Départ</button>
+                        <button id="btn-editor-clear" class="btn" title="Vider l'échiquier">🗑️ Vider</button>
+                    </div>
+                    <div class="editor-row">
+                        <button id="btn-editor-apply" class="btn btn-success">✅ Appliquer</button>
+                        <button id="btn-editor-cancel" class="btn">✖ Annuler</button>
+                    </div>
                 </div>
 
                 <!-- Réglages Moteur & Niveau Bot -->
@@ -279,5 +303,6 @@
     </main>
 
     <script src="/static/js/app.js"></script>
+    <script src="/static/js/position_editor.js"></script>
 </body>
 </html>

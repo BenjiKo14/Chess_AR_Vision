@@ -91,6 +91,7 @@ def camera_connect():
     data = request.get_json(silent=True) or {}
     idx = int(data.get('index', 0))
     ok, err = camera_mgr.start(index=idx)
+    vision_mgr.invalidate_geometry()  # nouvelle image : l'ancienne référence n'est plus comparable
     if ok:
         return jsonify({'success': True, 'status': camera_mgr.get_status()})
     return jsonify({'success': False, 'error': err}), 400
@@ -103,6 +104,7 @@ def camera_disconnect():
 @app.route('/api/camera/settings', methods=['POST'])
 def camera_settings():
     data = request.get_json(silent=True) or {}
+    vision_mgr.invalidate_geometry()
     status = camera_mgr.update_settings(
         rotate_180=data.get('rotate_180'),
         flip_h=data.get('flip_h'),
@@ -141,6 +143,7 @@ def camera_upload_photo():
 
     file_bytes = file.read()
     ok, err = camera_mgr.load_static_image(file_bytes)
+    vision_mgr.invalidate_geometry()  # nouvelle image : l'ancienne référence n'est plus comparable
     if ok:
         return jsonify({'success': True, 'status': camera_mgr.get_status()})
     return jsonify({'success': False, 'error': err}), 400
@@ -204,6 +207,10 @@ def vision_overlay_settings():
         vision_mgr.show_ar_labels = bool(data['show_ar_labels'])
     if 'show_ar_arrow' in data:
         vision_mgr.show_ar_arrow = bool(data['show_ar_arrow'])
+    if 'show_ar_vision_debug' in data:
+        vision_mgr.show_ar_vision_debug = bool(data['show_ar_vision_debug'])
+    if 'show_ar_pieces' in data:
+        vision_mgr.show_ar_pieces = bool(data['show_ar_pieces'])
     if 'show_warped_grid' in data:
         vision_mgr.show_warped_grid = bool(data['show_warped_grid'])
     if 'show_warped_arrow' in data:
@@ -251,8 +258,8 @@ def game_confirm_setup():
 
 @app.route('/api/game/resync-reference', methods=['POST'])
 def game_resync_reference():
-    ok = game_mgr.resync_reference()
-    return jsonify({'success': ok, 'message': "Image de référence synchronisée"})
+    ok, msg = game_mgr.resync_reference()
+    return jsonify({'success': ok, 'message': msg})
 
 @app.route('/api/game/manual-move', methods=['POST'])
 def game_manual_move():
@@ -260,6 +267,12 @@ def game_manual_move():
     uci_str = data.get('uci', '').strip()
     ok, msg = game_mgr.play_manual_move(uci_str)
     return jsonify({'success': ok, 'message': msg, 'game': game_mgr.get_status()})
+
+@app.route('/api/game/set-position', methods=['POST'])
+def game_set_position():
+    data = request.get_json(silent=True) or {}
+    ok, msg = game_mgr.set_position(data.get('fen', '').strip())
+    return jsonify({'success': ok, 'message': msg, 'game': game_mgr.get_status()}), (200 if ok else 400)
 
 @app.route('/api/game/undo', methods=['POST'])
 def game_undo():
@@ -276,7 +289,8 @@ def game_hint():
             "to_sq": m.to_square,
             "is_capture": game_mgr.board.is_capture(m),
             "color": (255, 200, 0),  # Flèche Cyan/Bleue pour l'indice
-            "label": f"Conseil: {hint_res['san']}"
+            "label": f"Conseil: {hint_res['san']}",
+            "kind": "hint"
         }
         return jsonify({'success': True, 'hint': hint_res})
     return jsonify({'success': False, 'error': 'Aucun conseil disponible'}), 400

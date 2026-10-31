@@ -7,6 +7,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+import hough_board
+
 def safe_log_print(msg):
     """Affiche un message en console de façon sûre (évite UnicodeEncodeError sous Windows cp1252)."""
     try:
@@ -45,6 +47,9 @@ class ChessVisionManager:
             [0.15, 0.85]
         ]
         self.is_calibrated = False
+        # Incrémenté à chaque changement de géométrie ou d'image (coins, quadrillage, caméra) :
+        # une image de référence prise avant n'est plus comparable case par case.
+        self.geometry_version = 0
         self._load_calibration()
 
         # Cache homographie
@@ -62,11 +67,14 @@ class ChessVisionManager:
         self.show_ar_grid = True
         self.show_ar_labels = True
         self.show_ar_arrow = True      # Flèche AR sur l'écran caméra principal
+        self.show_ar_vision_debug = False # Vue détection ordinateur (carte des contours/gradients projetée)
+        self.show_ar_pieces = False       # Pastilles des pièces détectées (Blancs/Noirs) en direct
         self.show_warped_grid = True
         self.show_warped_arrow = True  # Flèche sur la vue plateau redressée 512x512
         self.show_aruco_debug = True  # Affiche les carrés ArUco détectés avec leur contour vert et leur ID
         self.last_detected_markers = {}  # Stocke id -> np.array (4x2)
         self.last_aruco_centers_norm = None  # Stocke les 4 centres bruts des marqueurs pour ajuster l'inset en direct
+        self.last_detected_pieces = None    # Stocke les probabilités de présence par case [P_vide, P_blanc, P_noir]
         # Lignes directrices exactes détectées par Hough (9 lignes horizontales et 9 lignes verticales dans 512x512)
         # Quadrillage interne affiné (lignes internes calées sur les vraies séparations ; contour jamais modifié)
         self.refined_grid = None
@@ -167,6 +175,7 @@ class ChessVisionManager:
                 self.is_calibrated = True
                 self.last_frame_shape = None
                 self.refined_grid = None  # le quadrillage affiné dépend du contour : à recalculer
+                self.geometry_version += 1
                 self.save_calibration()
                 return True
         return False
@@ -178,6 +187,7 @@ class ChessVisionManager:
             self.corners_norm = [self.corners_norm[1], self.corners_norm[2], self.corners_norm[3], self.corners_norm[0]]
             self.last_frame_shape = None
             self.refined_grid = None
+            self.geometry_version += 1
             self.save_calibration()
             return self.corners_norm
 
@@ -404,6 +414,7 @@ class ChessVisionManager:
 
             with self._lock:
                 self.refined_grid = grid
+                self.geometry_version += 1
                 self.refined_grid_count = n_fitted
             self.log(f"📐 Quadrillage aligné : {n_fitted}/14 lignes internes calées (contour inchangé)")
             return n_fitted > 0
@@ -411,10 +422,16 @@ class ChessVisionManager:
             self.log(f"Alignement quadrillage impossible : {e}")
             return False
 
+    def invalidate_geometry(self):
+        """À appeler quand l'image change de nature (caméra reconnectée, rotation, filtres)."""
+        with self._lock:
+            self.geometry_version += 1
+
     def reset_grid(self):
         with self._lock:
             self.refined_grid = None
             self.refined_grid_count = 0
+            self.geometry_version += 1
 
     def update_detection_config(self, new_cfg, raw_frame=None):
         """Met à jour les paramètres de la console de détection et recalcule les coins si nécessaire."""
@@ -422,10 +439,14 @@ class ChessVisionManager:
             for k in ("min_side_px", "max_side_px", "clahe_clip", "bin_thresh", "border_err", "err_corr", "aruco_inset_pct", "grid_max_shift"):
                 if k in new_cfg and new_cfg[k] is not None:
                     self.detection_config[k] = float(new_cfg[k])
-            if "use_hough_refine" in new_cfg:
-                self.detection_config["use_hough_refine"] = bool(new_cfg["use_hough_refine"])
             if "detection_method" in new_cfg and new_cfg["detection_method"]:
-                self.detection_config["detection_method"] = str(new_cfg["detection_method"]).upper()
+                method_val = str(new_cfg["detection_method"]).upper()
+                self.detection_config["detection_method"] = method_val
+                # En mode ARUCO pur, on désactive le raffinement Hough pour garder la grille 8x8 uniforme
+                # En mode COUPLED ou HOUGH, le raffinement des lignes Hough internes est actif
+                self.detection_config["use_hough_refine"] = (method_val != "ARUCO")
+            elif "use_hough_refine" in new_cfg:
+                self.detection_config["use_hough_refine"] = bool(new_cfg["use_hough_refine"])
 
             # L'inset déplace le contour : on le recalcule depuis les centres ArUco mémorisés
             if "aruco_inset_pct" in new_cfg and self.last_aruco_centers_norm and len(self.last_aruco_centers_norm) == 4:
@@ -433,10 +454,11 @@ class ChessVisionManager:
 
         if raw_frame is not None and any(k in new_cfg for k in ("min_side_px", "max_side_px", "clahe_clip", "bin_thresh", "border_err", "err_corr", "detection_method")):
             self.auto_detect_board(raw_frame)
-
-        # Le quadrillage interne est toujours recalculé sur le contour courant
-        if raw_frame is not None and self.detection_config.get("use_hough_refine", True):
+        elif raw_frame is not None and self.detection_config.get("use_hough_refine", True):
+            # Le quadrillage interne est recalculé sur le contour courant
             self.fit_grid_lines(raw_frame)
+        elif not self.detection_config.get("use_hough_refine", True):
+            self.reset_grid()
 
         return self.detection_config
 
@@ -589,75 +611,22 @@ class ChessVisionManager:
 
     def detect_corners_hough(self, frame):
         """
-        Détecte les 4 coins du damier par Transformée de Hough pure (recherche des lignes extérieures).
-        Ne nécessite aucun marqueur ArUco.
+        Détecte les 4 coins de la zone de jeu 8x8 par transformée de Hough, sans marqueur ArUco :
+        toutes les lignes sont détectées, puis on cherche le quadrillage 8x8 dont les cases
+        alternent noir/blanc (voir hough_board.py). L'orientation (a8 = case claire) est gardée
+        la plus proche possible de la calibration précédente.
         """
         if frame is None:
             return False, None, "Aucune image reçue"
         h, w = frame.shape[:2]
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8)).apply(gray)
-        edges = cv2.Canny(clahe, 40, 140)
-        lines = cv2.HoughLinesP(edges, 1, np.pi/180, threshold=35, minLineLength=35, maxLineGap=15)
-        if lines is None:
-            return False, None, "Pas assez de lignes Hough détectées"
-
-        h_lines, v_lines = [], []
-        for l in lines:
-            x1, y1, x2, y2 = l.flatten()
-            deg = np.degrees(np.arctan2(abs(y2 - y1), abs(x2 - x1)))
-            length = np.hypot(x2 - x1, y2 - y1)
-            if deg < 25:
-                y_mid = y1 + (w/2 - x1) * (y2 - y1) / (x2 - x1 + 1e-5)
-                if 0.08*h < y_mid < 0.92*h:
-                    h_lines.append((y_mid, (x1, y1, x2, y2, length)))
-            elif deg > 65:
-                x_mid = x1 + (h/2 - y1) * (x2 - x1) / (y2 - y1 + 1e-5)
-                if 0.08*w < x_mid < 0.92*w:
-                    v_lines.append((x_mid, (x1, y1, x2, y2, length)))
-
-        if len(h_lines) < 4 or len(v_lines) < 4:
-            return False, None, f"Lignes Hough insuffisantes (H:{len(h_lines)}, V:{len(v_lines)})"
-
-        h_lines.sort(key=lambda x: x[0])
-        v_lines.sort(key=lambda x: x[0])
-
-        def fit_extreme(items, is_min=True):
-            count = max(3, len(items)//6)
-            sub = items[:count] if is_min else items[-count:]
-            pts = []
-            for _, (x1, y1, x2, y2, l) in sub:
-                pts.append([x1, y1]); pts.append([x2, y2])
-            pts = np.array(pts, dtype=np.float32)
-            [vx, vy, x0, y0] = cv2.fitLine(pts, cv2.DIST_L2, 0, 0.01, 0.01).flatten()
-            dx, dy = vx, vy
-            length = np.hypot(dx, dy)
-            a, b = -dy / length, dx / length
-            c = -(a * x0 + b * y0)
-            return a, b, c
-
-        top_l = fit_extreme(h_lines, True)
-        bot_l = fit_extreme(h_lines, False)
-        lef_l = fit_extreme(v_lines, True)
-        rig_l = fit_extreme(v_lines, False)
-
-        def inter(l1, l2):
-            a1, b1, c1 = l1
-            a2, b2, c2 = l2
-            det = a1 * b2 - a2 * b1
-            if abs(det) < 1e-4: return None
-            return (b1 * c2 - b2 * c1) / det, (c1 * a2 - c2 * a1) / det
-
-        c_tl = inter(top_l, lef_l)
-        c_tr = inter(top_l, rig_l)
-        c_br = inter(bot_l, rig_l)
-        c_bl = inter(bot_l, lef_l)
-
-        if any(c is None for c in [c_tl, c_tr, c_br, c_bl]):
-            return False, None, "Calcul des coins Hough échoué"
-
-        corners_norm = [[float(c[0] / w), float(c[1] / h)] for c in [c_tl, c_tr, c_br, c_bl]]
-        return True, corners_norm, "4/4 coins détectés par Transformée de Hough pure"
+        previous = None
+        if self.is_calibrated and self.corners_norm:
+            previous = [[p[0] * w, p[1] * h] for p in self.corners_norm]
+        ok, corners_px, msg = hough_board.detect_board(frame, previous_corners_px=previous)
+        if not ok:
+            return False, None, msg
+        corners_norm = [[float(x / w), float(y / h)] for x, y in corners_px]
+        return True, corners_norm, msg
 
     def snap_corners_to_hough_intersections(self, frame, initial_corners_norm, max_dist_px=22):
         """
@@ -719,10 +688,10 @@ class ChessVisionManager:
 
     def auto_detect_board(self, raw_frame):
         """
-        Détection automatique selon l'option choisie :
-        - 'ARUCO'   : Détection uniquement par marqueurs ArUco (+ retrait bordure)
-        - 'HOUGH'   : Détection uniquement par Transformée de Hough pure sur les lignes
-        - 'COUPLED' : Couplage ArUco + Hough (coins ArUco recalés sur les intersections réelles)
+        Détection automatique selon le mode choisi :
+        - 'COUPLED' : ArUco pour le contour externe + Hough pour l'alignement précis du quadrillage interne (Recommandé)
+        - 'ARUCO'   : ArUco seul (contour externe ArUco + grille uniforme 8x8 standard)
+        - 'HOUGH'   : Hough seul (lignes du damier sans marqueurs)
         """
         if raw_frame is None:
             return False, "Aucune image reçue", None
@@ -738,30 +707,28 @@ class ChessVisionManager:
                 return True, msg, corners
 
         elif method == "ARUCO":
+            # Mode ArUco pur : 4 coins déterminés par ArUco + grille uniforme 8x8
             has_aruco, aruco_corners, aruco_msg = self.detect_aruco_corners(raw_frame)
             if has_aruco:
                 self.set_corners(aruco_corners)
-                if self.refit_grid(raw_frame):
-                    aruco_msg += f" + Quadrillage ({self.refined_grid_count}/14 lignes)"
-                return True, aruco_msg, aruco_corners
+                self.reset_grid()
+                return True, aruco_msg + " (Grille uniforme 8x8)", aruco_corners
 
-        else: # 'COUPLED' (ArUco + Hough combiné)
+        else: # 'COUPLED' (ArUco pour le contour + Hough pour le quadrillage interne)
             has_aruco, aruco_corners, aruco_msg = self.detect_aruco_corners(raw_frame)
             if has_aruco:
-                coupled_corners, snap_count = self.snap_corners_to_hough_intersections(raw_frame, aruco_corners)
-                self.set_corners(coupled_corners)
-                snap_msg = f" + Couplage Hough ({snap_count}/4 coins recalés)" if snap_count > 0 else ""
-                if self.refit_grid(raw_frame):
-                    snap_msg += f" + Quadrillage ({self.refined_grid_count}/14 lignes)"
-                return True, aruco_msg + snap_msg, coupled_corners
+                self.set_corners(aruco_corners)
+                if self.fit_grid_lines(raw_frame):
+                    aruco_msg += f" + Quadrillage Hough ({self.refined_grid_count}/14 lignes)"
+                return True, aruco_msg, aruco_corners
 
             # Fallback Hough pure si ArUco non détecté
             ok_hough, hough_corners, hough_msg = self.detect_corners_hough(raw_frame)
             if ok_hough:
                 self.set_corners(hough_corners)
-                if self.refit_grid(raw_frame):
-                    hough_msg += f" + Quadrillage ({self.refined_grid_count}/14 lignes)"
-                return True, "ArUco partiel -> " + hough_msg, hough_corners
+                if self.fit_grid_lines(raw_frame):
+                    hough_msg += f" + Quadrillage Hough ({self.refined_grid_count}/14 lignes)"
+                return True, "ArUco non détecté -> " + hough_msg, hough_corners
 
         h, w = raw_frame.shape[:2]
         gray = cv2.cvtColor(raw_frame, cv2.COLOR_BGR2GRAY)
@@ -875,6 +842,26 @@ class ChessVisionManager:
 
             # 4. Rendu Réalité Augmentée sur la caméra
             display_frame = frame.copy()
+
+            # Mode "Vision Détection Ordinateur" : projection de la carte de gradient / contours
+            if self.show_ar_vision_debug and self.is_calibrated and self.H_inv is not None:
+                try:
+                    lg = np.log(cv2.GaussianBlur(gray_warped.astype(np.float32), (3, 3), 0) + 8.0)
+                    gx = cv2.Sobel(lg, cv2.CV_32F, 1, 0, ksize=3)
+                    gy = cv2.Sobel(lg, cv2.CV_32F, 0, 1, ksize=3)
+                    lgrad = np.sqrt(gx * gx + gy * gy)
+                    grad_norm = np.clip(lgrad * 125, 0, 255).astype(np.uint8)
+                    grad_color = cv2.applyColorMap(grad_norm, cv2.COLORMAP_MAGMA)
+                    unwarped_grad = cv2.warpPerspective(grad_color, self.H_inv, (w, h))
+
+                    corners_px = np.array([(int(p[0] * w), int(p[1] * h)) for p in self.corners_norm], dtype=np.int32)
+                    mask = np.zeros((h, w), dtype=np.uint8)
+                    cv2.fillConvexPoly(mask, corners_px, 255)
+                    idx = mask > 0
+                    display_frame[idx] = cv2.addWeighted(display_frame[idx], 0.15, unwarped_grad[idx], 0.85, 0)
+                except Exception:
+                    pass
+
             self._draw_ar_elements(display_frame, w, h)
 
             return display_frame
@@ -977,7 +964,29 @@ class ChessVisionManager:
         if self.show_ar_arrow and self.ar_arrow:
             self._draw_perspective_arrow(display_frame, overlay, self.ar_arrow)
 
-        # E. Indicateur de stabilité en bandeau discret en haut
+        # E. Pastilles des pièces détectées en direct
+        if self.show_ar_pieces and self.last_detected_pieces is not None:
+            try:
+                for sq in range(min(64, len(self.last_detected_pieces))):
+                    p_empty, p_white, p_black = self.last_detected_pieces[sq]
+                    col = sq % 8
+                    row = 7 - (sq // 8)
+                    poly = self.square_to_camera_polygon(col, row)
+                    cx = int(np.mean(poly[:, 0]))
+                    cy = int(np.mean(poly[:, 1]))
+
+                    if p_white > 0.50:
+                        cv2.circle(display_frame, (cx, cy), 12, (245, 245, 245), -1, cv2.LINE_AA)
+                        cv2.circle(display_frame, (cx, cy), 12, (30, 30, 30), 2, cv2.LINE_AA)
+                        cv2.circle(display_frame, (cx, cy), 4, (20, 20, 20), -1, cv2.LINE_AA)
+                    elif p_black > 0.50:
+                        cv2.circle(display_frame, (cx, cy), 12, (35, 35, 35), -1, cv2.LINE_AA)
+                        cv2.circle(display_frame, (cx, cy), 12, (240, 240, 240), 2, cv2.LINE_AA)
+                        cv2.circle(display_frame, (cx, cy), 4, (240, 240, 240), -1, cv2.LINE_AA)
+            except Exception:
+                pass
+
+        # F. Indicateur de stabilité en bandeau discret en haut
         status_color = (60, 210, 80) if self.is_board_stable else (0, 160, 255)
         status_text = "PLATEAU STABLE" if self.is_board_stable else "MOUVEMENT DETECTE..."
         cv2.circle(display_frame, (18, 22), 6, status_color, -1, cv2.LINE_AA)
@@ -1140,6 +1149,30 @@ class ChessVisionManager:
 
         return scores
 
+    def compute_square_structure(self, ref_warped, cur_warped, squares):
+        """
+        Pour chaque case demandée : (ncc, std_ref, std_cur).
+        ncc = corrélation normalisée (centrée) entre la case de référence et la case actuelle.
+        Proche de 1 : même contenu, éventuellement assombri (ombre, lumière) ; une case
+        réellement vidée donne une valeur basse, même si une pièce voisine déborde dessus.
+        """
+        out = {}
+        if ref_warped is None or cur_warped is None:
+            return out
+        for sq in squares:
+            a = self.get_square_roi(ref_warped, sq)
+            b = self.get_square_roi(cur_warped, sq)
+            if a.size == 0 or b.size == 0 or a.shape != b.shape:
+                continue
+            a = cv2.cvtColor(a, cv2.COLOR_BGR2GRAY).astype(np.float32)
+            b = cv2.cvtColor(b, cv2.COLOR_BGR2GRAY).astype(np.float32)
+            a -= a.mean()
+            b -= b.mean()
+            den = float(np.sqrt((a * a).sum() * (b * b).sum()))
+            ncc = float((a * b).sum() / den) if den > 1e-6 else 0.0
+            out[sq] = (ncc, float(a.std()), float(b.std()))
+        return out
+
     def get_latest_warped_frame(self):
         with self._lock:
             return self._latest_warped_frame.copy() if self._latest_warped_frame is not None else None
@@ -1157,6 +1190,8 @@ class ChessVisionManager:
                     'show_ar_grid': self.show_ar_grid,
                     'show_ar_labels': self.show_ar_labels,
                     'show_ar_arrow': self.show_ar_arrow,
+                    'show_ar_vision_debug': self.show_ar_vision_debug,
+                    'show_ar_pieces': self.show_ar_pieces,
                     'show_warped_grid': self.show_warped_grid,
                     'show_warped_arrow': self.show_warped_arrow,
                     'show_aruco_debug': self.show_aruco_debug

@@ -46,6 +46,7 @@ class CameraManager:
         self.rotate_180 = False
         self.flip_h = False
         self.show_crosshair = False
+        self.active_filters = []  # Liste cumulable : ["clahe", "binary", "adaptive", "sharpen"]
 
         # Hook processeur d'image (ex: ChessVisionManager.process_frame)
         self.frame_processor = None
@@ -81,6 +82,43 @@ class CameraManager:
             self.log(f"[OK] Photo chargee comme source video ({w}x{h})")
             return True, None
 
+    def _apply_preview_filter(self, img):
+        if not self.active_filters:
+            return img
+
+        res = img.copy()
+        is_gray = False
+
+        for f in self.active_filters:
+            if f == "clahe":
+                if not is_gray:
+                    res = cv2.cvtColor(res, cv2.COLOR_BGR2GRAY)
+                    is_gray = True
+                cl = cv2.createCLAHE(clipLimit=3.5, tileGridSize=(8, 8))
+                res = cl.apply(res)
+            elif f == "binary":
+                if not is_gray:
+                    res = cv2.cvtColor(res, cv2.COLOR_BGR2GRAY)
+                    is_gray = True
+                _, res = cv2.threshold(res, 128, 255, cv2.THRESH_BINARY)
+            elif f == "otsu":
+                if not is_gray:
+                    res = cv2.cvtColor(res, cv2.COLOR_BGR2GRAY)
+                    is_gray = True
+                _, res = cv2.threshold(res, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            elif f == "adaptive":
+                if not is_gray:
+                    res = cv2.cvtColor(res, cv2.COLOR_BGR2GRAY)
+                    is_gray = True
+                res = cv2.adaptiveThreshold(res, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, 19, 4)
+            elif f == "sharpen":
+                kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
+                res = cv2.filter2D(res, -1, kernel)
+
+        if is_gray:
+            return cv2.cvtColor(res, cv2.COLOR_GRAY2BGR)
+        return res
+
     def _static_loop(self):
         """Sert l'image fixe en continu pour permettre l'interaction AR sans webcam."""
         while not self._stop_event.is_set():
@@ -100,6 +138,8 @@ class CameraManager:
                     display_frame = self.frame_processor(display_frame)
                 except Exception as e:
                     pass
+
+            display_frame = self._apply_preview_filter(display_frame)
 
             ok, buf = cv2.imencode('.jpg', display_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
             if ok:
@@ -240,6 +280,8 @@ class CameraManager:
                 h, w = display_frame.shape[:2]
                 cv2.circle(display_frame, (w // 2, h // 2), 15, (0, 255, 200), 1, cv2.LINE_AA)
 
+            display_frame = self._apply_preview_filter(display_frame)
+
             # 4. Encodage JPEG pour streaming web
             ok, buf = cv2.imencode('.jpg', display_frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
             if ok:
@@ -289,14 +331,22 @@ class CameraManager:
         with self._lock:
             return self._latest_display_jpeg
 
-    def update_settings(self, rotate_180=None, flip_h=None, show_crosshair=None):
+    def update_settings(self, rotate_180=None, flip_h=None, show_crosshair=None, active_filters=None, toggle_flip_h=False, toggle_rotate_180=False):
         with self._lock:
-            if rotate_180 is not None:
-                self.rotate_180 = bool(rotate_180)
-            if flip_h is not None:
+            if toggle_flip_h:
+                self.flip_h = not self.flip_h
+            elif flip_h is not None:
                 self.flip_h = bool(flip_h)
+
+            if toggle_rotate_180:
+                self.rotate_180 = not self.rotate_180
+            elif rotate_180 is not None:
+                self.rotate_180 = bool(rotate_180)
+
             if show_crosshair is not None:
                 self.show_crosshair = bool(show_crosshair)
+            if active_filters is not None:
+                self.active_filters = list(active_filters)
             return self.get_status()
 
     def take_snapshot(self, save_dir="snapshots"):
@@ -325,6 +375,7 @@ class CameraManager:
             'settings': {
                 'rotate_180': self.rotate_180,
                 'flip_h': self.flip_h,
-                'show_crosshair': self.show_crosshair
+                'show_crosshair': self.show_crosshair,
+                'active_filters': self.active_filters
             }
         }

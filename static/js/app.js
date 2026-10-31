@@ -154,7 +154,19 @@ function initEventListeners() {
         postJSON('/api/camera/snapshot', {});
     });
 
-    // Filtres Vision Multiples & Cumulables
+    // Filtres Vision Multiples & Cumulables (réductible / déroulable)
+    const btnToggleFilters = document.getElementById('btn-toggle-filters');
+    const filtersToolbar = document.getElementById('filters-toolbar');
+    if (btnToggleFilters && filtersToolbar) {
+        btnToggleFilters.addEventListener('click', function() {
+            this.classList.toggle('active');
+            const isOpen = this.classList.contains('active');
+            filtersToolbar.style.display = isOpen ? 'flex' : 'none';
+            const count = currentFilters.length > 0 ? ` (${currentFilters.length})` : '';
+            this.innerText = isOpen ? `🎨 Masquer Filtres ▴` : `🎨 Filtres${count} ▾`;
+        });
+    }
+
     let currentFilters = [];
     document.querySelectorAll('.btn-filter').forEach(btn => {
         btn.addEventListener('click', function() {
@@ -165,6 +177,10 @@ function initEventListeners() {
             } else {
                 currentFilters = currentFilters.filter(f => f !== fName);
             }
+            if (btnToggleFilters && !btnToggleFilters.classList.contains('active')) {
+                const count = currentFilters.length > 0 ? ` (${currentFilters.length})` : '';
+                btnToggleFilters.innerText = `🎨 Filtres${count} ▾`;
+            }
             postJSON('/api/camera/settings', { active_filters: currentFilters });
         });
     });
@@ -172,6 +188,10 @@ function initEventListeners() {
     document.getElementById('btn-filter-reset').addEventListener('click', function() {
         currentFilters = [];
         document.querySelectorAll('.btn-filter').forEach(b => b.classList.remove('active'));
+        if (btnToggleFilters) {
+            const isOpen = btnToggleFilters.classList.contains('active');
+            btnToggleFilters.innerText = isOpen ? `🎨 Masquer Filtres ▴` : `🎨 Filtres ▾`;
+        }
         postJSON('/api/camera/settings', { active_filters: [] });
     });
 
@@ -205,6 +225,22 @@ function initEventListeners() {
         btnToggleArArrow.addEventListener('click', function() {
             this.classList.toggle('active');
             postJSON('/api/vision/overlay-settings', { show_ar_arrow: this.classList.contains('active') });
+        });
+    }
+
+    const btnToggleVisionDebug = document.getElementById('btn-toggle-vision-debug');
+    if (btnToggleVisionDebug) {
+        btnToggleVisionDebug.addEventListener('click', function() {
+            this.classList.toggle('active');
+            postJSON('/api/vision/overlay-settings', { show_ar_vision_debug: this.classList.contains('active') });
+        });
+    }
+
+    const btnTogglePieces = document.getElementById('btn-toggle-pieces');
+    if (btnTogglePieces) {
+        btnTogglePieces.addEventListener('click', function() {
+            this.classList.toggle('active');
+            postJSON('/api/vision/overlay-settings', { show_ar_pieces: this.classList.contains('active') });
         });
     }
 
@@ -256,7 +292,13 @@ function initEventListeners() {
         postJSON('/api/game/confirm-setup', {}).then(pollGameStatus);
     });
     document.getElementById('btn-resync').addEventListener('click', () => {
-        postJSON('/api/game/resync-reference', {}).then(pollGameStatus);
+        postJSON('/api/game/resync-reference', {}).then(res => {
+            if (res && !res.success && res.message) {
+                document.getElementById('banner-action').innerText = `⚠️ ${res.message}`;
+            } else {
+                pollGameStatus();
+            }
+        });
     });
     document.getElementById('btn-undo').addEventListener('click', () => {
         postJSON('/api/game/undo', {}).then(pollGameStatus);
@@ -454,10 +496,6 @@ function setupDetectionConsole() {
                 payload[s.key] = s.isFloat ? parseFloat(el.value) : parseInt(el.value);
             }
         });
-        const chkHough = document.getElementById('cfg-use-hough');
-        if (chkHough) {
-            payload['use_hough_refine'] = chkHough.checked;
-        }
 
         postJSON('/api/vision/detection-config', payload).then(res => {
             if (res && res.success) {
@@ -468,9 +506,8 @@ function setupDetectionConsole() {
                 if (res.detected_aruco_ids) {
                     updateArucoBadge(res.detected_aruco_ids);
                     const c = res.detected_aruco_ids.length;
-                    const houghTxt = payload.use_hough_refine ? ' + Lignes Hough activées' : '';
                     document.getElementById('banner-action').innerText =
-                        `🎛️ Paramètres appliqués en direct — ${c}/4 marqueurs détectés (Inset: ${payload.aruco_inset_pct}%${houghTxt}).`;
+                        `🎛️ Paramètres appliqués en direct — ${c}/4 marqueurs détectés (Inset: ${payload.aruco_inset_pct}%).`;
                 }
             }
         });
@@ -487,7 +524,6 @@ function setupDetectionConsole() {
         });
     });
 
-    const chkHough = document.getElementById('cfg-use-hough');
     // Sélecteur de méthode de détection des coins (barre d'outils + console synchronisés)
     const selMethodToolbar = document.getElementById('select-det-method');
     const selMethodConsole = document.getElementById('cfg-det-method');
@@ -500,30 +536,20 @@ function setupDetectionConsole() {
                     currentCornersNorm = res.corners;
                     drawOverlay();
                 }
-                const labelMap = { 'COUPLED': 'Couplé (ArUco + Hough)', 'ARUCO': 'ArUco seul', 'HOUGH': 'Hough seul' };
+                const labelMap = { 
+                    'COUPLED': 'ArUco + Hough (Contour ArUco + Lignes Hough)', 
+                    'ARUCO': 'ArUco seul (Grille uniforme 8x8)', 
+                    'HOUGH': 'Hough seul (Sans marqueurs)' 
+                };
+                const nLines = res.status && res.status.grid_refined_lines;
+                const linesDetail = (newVal === 'COUPLED' && nLines) ? ` (${nLines}/14 lignes ajustées)` : '';
                 document.getElementById('banner-action').innerText =
-                    `🎯 Méthode : ${labelMap[newVal] || newVal} activée. Cliquez sur « ✨ Détection Auto » pour relancer si besoin.`;
+                    `🎯 Méthode activée : ${labelMap[newVal] || newVal}${linesDetail}. Cliquez sur « ✨ Détection Auto » pour relancer si besoin.`;
             }
         });
     }
     if (selMethodToolbar) selMethodToolbar.addEventListener('change', (e) => onMethodChange(e.target.value));
     if (selMethodConsole) selMethodConsole.addEventListener('change', (e) => onMethodChange(e.target.value));
-
-    // Toutes les cases « avec/sans Hough » (barre caméra, vue redressée, console) restent synchronisées
-    document.querySelectorAll('.hough-toggle').forEach(chk => {
-        chk.addEventListener('change', function() {
-            const on = this.checked;
-            document.querySelectorAll('.hough-toggle').forEach(o => { o.checked = on; });
-            postJSON('/api/vision/detection-config', { use_hough_refine: on }).then(res => {
-                if (res && res.success) {
-                    const n = res.status && res.status.grid_refined_lines;
-                    document.getElementById('banner-action').innerText = on
-                        ? `📐 AVEC Hough : quadrillage interne calé sur les vraies cases (${n ?? '?'}/14 lignes) — contour inchangé.`
-                        : '▦ SANS Hough : quadrillage uniforme 8×8 dans le contour.';
-                }
-            });
-        });
-    });
 
     const btnReset = document.getElementById('btn-reset-det-config');
     if (btnReset) {
@@ -544,7 +570,6 @@ function setupDetectionConsole() {
                     valEl.innerText = `${defaults[s.id]}${s.unit}`;
                 }
             });
-            if (chkHough) document.querySelectorAll('.hough-toggle').forEach(o => { o.checked = true; });
             pushConfigUpdate();
         });
     }
@@ -613,6 +638,8 @@ function pollGameStatus() {
 
 function updateGameUI(data) {
     if (!data || !data.game) return;
+    // Correction de position en cours (position_editor.js) : ne pas écraser le plateau ni le bandeau
+    if (typeof isPositionEditing === 'function' && isPositionEditing()) return;
     const g = data.game;
     currentPendingBotMove = g.pending_bot_move;
     currentArrow = g.arrow || null;
@@ -622,7 +649,11 @@ function updateGameUI(data) {
     const banner = document.getElementById('banner-action');
 
     turnBadge.innerText = g.state;
-    if (g.state === 'WAIT_HUMAN_MOVE') {
+    if (g.ambiguity) {
+        banner.innerText = `❓ La caméra hésite entre : ${g.ambiguity}. Placez la bonne position via « ✏️ Corriger la position ».`;
+    } else if (g.vision_hint) {
+        banner.innerText = `⏸️ Coup non validé : ${g.vision_hint}.`;
+    } else if (g.state === 'WAIT_HUMAN_MOVE') {
         turnBadge.className = 'badge badge-online';
         banner.innerText = `🟢 À votre tour de jouer (${g.turn === 'white' ? 'Blancs' : 'Noirs'}). Déplacez une pièce sur le plateau.`;
     } else if (g.state === 'WAIT_BOT_EXECUTION' && g.pending_bot_move) {
@@ -630,6 +661,16 @@ function updateGameUI(data) {
         banner.innerText = `🤖 Déplacez la pièce du Bot : ${g.pending_bot_move.san} (${g.pending_bot_move.uci}) sur votre échiquier !`;
     } else if (g.state === 'SETUP_CHECK') {
         banner.innerText = `♟️ Placez les 32 pièces sur les rangées indiquées en AR, puis cliquez sur « ✅ Valider Pièces Initiales ».`;
+    }
+
+    const btnConfirmSetup = document.getElementById('btn-confirm-setup');
+    if (btnConfirmSetup) {
+        // Le bouton n'est actif que lors de la phase initiale d'installation (SETUP_CHECK ou IDLE sans coups joués)
+        const canConfirm = (g.state === 'SETUP_CHECK' || g.state === 'IDLE') && (!g.history || g.history.length === 0);
+        btnConfirmSetup.disabled = !canConfirm;
+        btnConfirmSetup.title = canConfirm 
+            ? "Valider la position initiale des 32 pièces pour lancer la partie"
+            : "Partie en cours : utilisez « 📸 Resync (J'adoube) » ou « ✏️ Corriger la position »";
     }
 
     // Historique
