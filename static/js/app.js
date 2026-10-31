@@ -3,6 +3,7 @@ let cameraConnected = false;
 let show2DArrow = true;
 let currentLastMoveUci = null;
 let currentPendingBotMove = null;
+let currentArrow = null;  // {uci, kind: 'bot' | 'hint'} fourni par le serveur
 let editingCorners = false;
 let activeDragCorner = null;
 let currentCornersNorm = [[0.2, 0.15], [0.8, 0.15], [0.85, 0.85], [0.15, 0.85]];
@@ -72,8 +73,8 @@ function updateDigitalBoard(fen, lastMoveUci) {
         el.classList.remove('highlight-from', 'highlight-to');
     });
 
+    currentLastMoveUci = lastMoveUci || null;
     if (lastMoveUci && lastMoveUci.length >= 4) {
-        currentLastMoveUci = lastMoveUci;
         const fCol = lastMoveUci.charCodeAt(0) - 97;
         const fRow = parseInt(lastMoveUci[1]) - 1;
         const tCol = lastMoveUci.charCodeAt(2) - 97;
@@ -100,8 +101,9 @@ function render2DMoveArrow() {
         return;
     }
 
-    // Priorité à un coup en attente du Bot ou au dernier coup joué
-    const uci = (currentPendingBotMove && currentPendingBotMove.uci) ? currentPendingBotMove.uci : currentLastMoveUci;
+    // Même flèche que les vues caméra : coup du bot à jouer ou conseil.
+    // Disparaît dès que le coup est joué ou qu'une nouvelle partie démarre.
+    const uci = currentArrow ? currentArrow.uci : null;
     if (!uci || uci.length < 4) {
         arrowLine.style.display = 'none';
         return;
@@ -119,7 +121,7 @@ function render2DMoveArrow() {
     const x2 = tCol * sqSize + sqSize / 2;
     const y2 = (7 - tRow) * sqSize + sqSize / 2;
 
-    const isBot = !!(currentPendingBotMove && currentPendingBotMove.uci);
+    const isBot = currentArrow.kind === 'bot';
     arrowLine.setAttribute('x1', x1);
     arrowLine.setAttribute('y1', y1);
     arrowLine.setAttribute('x2', x2);
@@ -486,6 +488,27 @@ function setupDetectionConsole() {
     });
 
     const chkHough = document.getElementById('cfg-use-hough');
+    // Sélecteur de méthode de détection des coins (barre d'outils + console synchronisés)
+    const selMethodToolbar = document.getElementById('select-det-method');
+    const selMethodConsole = document.getElementById('cfg-det-method');
+    function onMethodChange(newVal) {
+        if (selMethodToolbar) selMethodToolbar.value = newVal;
+        if (selMethodConsole) selMethodConsole.value = newVal;
+        postJSON('/api/vision/detection-config', { detection_method: newVal }).then(res => {
+            if (res && res.success) {
+                if (res.corners) {
+                    currentCornersNorm = res.corners;
+                    drawOverlay();
+                }
+                const labelMap = { 'COUPLED': 'Couplé (ArUco + Hough)', 'ARUCO': 'ArUco seul', 'HOUGH': 'Hough seul' };
+                document.getElementById('banner-action').innerText =
+                    `🎯 Méthode : ${labelMap[newVal] || newVal} activée. Cliquez sur « ✨ Détection Auto » pour relancer si besoin.`;
+            }
+        });
+    }
+    if (selMethodToolbar) selMethodToolbar.addEventListener('change', (e) => onMethodChange(e.target.value));
+    if (selMethodConsole) selMethodConsole.addEventListener('change', (e) => onMethodChange(e.target.value));
+
     // Toutes les cases « avec/sans Hough » (barre caméra, vue redressée, console) restent synchronisées
     document.querySelectorAll('.hough-toggle').forEach(chk => {
         chk.addEventListener('change', function() {
@@ -592,6 +615,7 @@ function updateGameUI(data) {
     if (!data || !data.game) return;
     const g = data.game;
     currentPendingBotMove = g.pending_bot_move;
+    currentArrow = g.arrow || null;
     updateDigitalBoard(g.fen, g.last_move);
 
     const turnBadge = document.getElementById('turn-badge');

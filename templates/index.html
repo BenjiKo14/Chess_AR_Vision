@@ -55,7 +55,12 @@
 
                 <div class="toolbar">
                     <span style="font-size: 0.8rem; font-weight: 600; color: #38bdf8;">Calibration :</span>
-                    <button id="btn-auto-calib" class="btn btn-success">✨ Détection Auto (ArUco / Grille)</button>
+                    <button id="btn-auto-calib" class="btn btn-success">✨ Détection Auto</button>
+                    <select id="select-det-method" class="select-input" style="border-color: #38bdf8; font-weight: 600;" title="Méthode de détection des coins">
+                        <option value="COUPLED" selected>🔗 Couplé (ArUco + Hough)</option>
+                        <option value="ARUCO">🏷️ ArUco seul</option>
+                        <option value="HOUGH">📐 Hough seul (Lignes)</option>
+                    </select>
                     <button id="btn-guide-4pts" class="btn" style="border-color: #f59e0b; color: #fbbf24;">🎯 Pointer 4 Clics</button>
                     <button id="btn-edit-corners" class="btn">📐 Ajuster (Manuel)</button>
                     <button id="btn-rotate-board" class="btn">🔄 Pivoter Blancs 90°</button>
@@ -153,10 +158,20 @@
                         <!-- Option 7 : Calage Subpixel par Transformée de Hough -->
                         <div style="background: #1e293b; padding: 8px; border-radius: 6px; display: flex; align-items: center; justify-content: space-between;">
                             <div>
-                                <label for="cfg-use-hough" style="font-weight: 600; color: #38bdf8; cursor: pointer;">📐 Calage Lignes Hough (Subpixel)</label>
-                                <div style="font-size: 0.7rem; color: #94a3b8;">Ajuste automatiquement les 4 coins sur les rainures du damier</div>
+                                <label for="cfg-use-hough" style="font-weight: 600; color: #38bdf8; cursor: pointer;">📐 Lignes Internes Hough (Subpixel)</label>
+                                <div style="font-size: 0.7rem; color: #94a3b8;">Ajuste le quadrillage interne sans déplacer le contour</div>
                             </div>
                             <input type="checkbox" id="cfg-use-hough" class="hough-toggle" checked style="width: 18px; height: 18px; accent-color: #38bdf8; cursor: pointer;">
+                        </div>
+
+                        <!-- Option 8 : Choix de la méthode de détection des coins -->
+                        <div style="background: #1e293b; padding: 8px; border-radius: 6px;">
+                            <label for="cfg-det-method" style="font-weight: 600; color: #d8b4fe; display: block; margin-bottom: 4px;">🎯 Méthode Détection Coins :</label>
+                            <select id="cfg-det-method" class="select-input" style="width: 100%;">
+                                <option value="COUPLED" selected>🔗 Couplé (ArUco + Hough)</option>
+                                <option value="ARUCO">🏷️ ArUco seul (+ Inset)</option>
+                                <option value="HOUGH">📐 Hough seul (Lignes damier)</option>
+                            </select>
                         </div>
                     </div>
                 </div>

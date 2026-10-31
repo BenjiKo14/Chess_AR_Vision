@@ -86,6 +86,7 @@ class ChessVisionManager:
             "err_corr": 0.85,
             "aruco_inset_pct": 2.4,  # Retrait automatique (%) des marqueurs vers les coins du damier 8x8
             "use_hough_refine": True, # Couplage avec la transformée de Hough pour calage subpixel sur les lignes de cases
+            "detection_method": "COUPLED", # 'ARUCO', 'HOUGH', 'COUPLED'
         }
 
         # Stabilité et mouvement (MotionGate)
@@ -423,17 +424,17 @@ class ChessVisionManager:
                     self.detection_config[k] = float(new_cfg[k])
             if "use_hough_refine" in new_cfg:
                 self.detection_config["use_hough_refine"] = bool(new_cfg["use_hough_refine"])
+            if "detection_method" in new_cfg and new_cfg["detection_method"]:
+                self.detection_config["detection_method"] = str(new_cfg["detection_method"]).upper()
 
             # L'inset déplace le contour : on le recalcule depuis les centres ArUco mémorisés
             if "aruco_inset_pct" in new_cfg and self.last_aruco_centers_norm and len(self.last_aruco_centers_norm) == 4:
                 self.set_corners(self._apply_inset_to_centers(self.last_aruco_centers_norm))
 
-        if raw_frame is not None and any(k in new_cfg for k in ("min_side_px", "max_side_px", "clahe_clip", "bin_thresh", "border_err", "err_corr")):
-            ok, corners, _ = self.detect_aruco_corners(raw_frame)
-            if ok:
-                self.set_corners(corners)
+        if raw_frame is not None and any(k in new_cfg for k in ("min_side_px", "max_side_px", "clahe_clip", "bin_thresh", "border_err", "err_corr", "detection_method")):
+            self.auto_detect_board(raw_frame)
 
-        # Le quadrillage interne est toujours recalculé sur le contour courant (sans le modifier)
+        # Le quadrillage interne est toujours recalculé sur le contour courant
         if raw_frame is not None and self.detection_config.get("use_hough_refine", True):
             self.fit_grid_lines(raw_frame)
 
@@ -586,18 +587,181 @@ class ChessVisionManager:
         self.reset_grid()
         return False
 
+    def detect_corners_hough(self, frame):
+        """
+        Détecte les 4 coins du damier par Transformée de Hough pure (recherche des lignes extérieures).
+        Ne nécessite aucun marqueur ArUco.
+        """
+        if frame is None:
+            return False, None, "Aucune image reçue"
+        h, w = frame.shape[:2]
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8)).apply(gray)
+        edges = cv2.Canny(clahe, 40, 140)
+        lines = cv2.HoughLinesP(edges, 1, np.pi/180, threshold=35, minLineLength=35, maxLineGap=15)
+        if lines is None:
+            return False, None, "Pas assez de lignes Hough détectées"
+
+        h_lines, v_lines = [], []
+        for l in lines:
+            x1, y1, x2, y2 = l.flatten()
+            deg = np.degrees(np.arctan2(abs(y2 - y1), abs(x2 - x1)))
+            length = np.hypot(x2 - x1, y2 - y1)
+            if deg < 25:
+                y_mid = y1 + (w/2 - x1) * (y2 - y1) / (x2 - x1 + 1e-5)
+                if 0.08*h < y_mid < 0.92*h:
+                    h_lines.append((y_mid, (x1, y1, x2, y2, length)))
+            elif deg > 65:
+                x_mid = x1 + (h/2 - y1) * (x2 - x1) / (y2 - y1 + 1e-5)
+                if 0.08*w < x_mid < 0.92*w:
+                    v_lines.append((x_mid, (x1, y1, x2, y2, length)))
+
+        if len(h_lines) < 4 or len(v_lines) < 4:
+            return False, None, f"Lignes Hough insuffisantes (H:{len(h_lines)}, V:{len(v_lines)})"
+
+        h_lines.sort(key=lambda x: x[0])
+        v_lines.sort(key=lambda x: x[0])
+
+        def fit_extreme(items, is_min=True):
+            count = max(3, len(items)//6)
+            sub = items[:count] if is_min else items[-count:]
+            pts = []
+            for _, (x1, y1, x2, y2, l) in sub:
+                pts.append([x1, y1]); pts.append([x2, y2])
+            pts = np.array(pts, dtype=np.float32)
+            [vx, vy, x0, y0] = cv2.fitLine(pts, cv2.DIST_L2, 0, 0.01, 0.01).flatten()
+            dx, dy = vx, vy
+            length = np.hypot(dx, dy)
+            a, b = -dy / length, dx / length
+            c = -(a * x0 + b * y0)
+            return a, b, c
+
+        top_l = fit_extreme(h_lines, True)
+        bot_l = fit_extreme(h_lines, False)
+        lef_l = fit_extreme(v_lines, True)
+        rig_l = fit_extreme(v_lines, False)
+
+        def inter(l1, l2):
+            a1, b1, c1 = l1
+            a2, b2, c2 = l2
+            det = a1 * b2 - a2 * b1
+            if abs(det) < 1e-4: return None
+            return (b1 * c2 - b2 * c1) / det, (c1 * a2 - c2 * a1) / det
+
+        c_tl = inter(top_l, lef_l)
+        c_tr = inter(top_l, rig_l)
+        c_br = inter(bot_l, rig_l)
+        c_bl = inter(bot_l, lef_l)
+
+        if any(c is None for c in [c_tl, c_tr, c_br, c_bl]):
+            return False, None, "Calcul des coins Hough échoué"
+
+        corners_norm = [[float(c[0] / w), float(c[1] / h)] for c in [c_tl, c_tr, c_br, c_bl]]
+        return True, corners_norm, "4/4 coins détectés par Transformée de Hough pure"
+
+    def snap_corners_to_hough_intersections(self, frame, initial_corners_norm, max_dist_px=22):
+        """
+        Couplage ArUco + Hough : recale précisément chaque coin initial sur l'intersection
+        réelle de lignes perpendiculaires Hough la plus proche.
+        """
+        if frame is None or not initial_corners_norm or len(initial_corners_norm) != 4:
+            return initial_corners_norm, 0
+
+        h, w = frame.shape[:2]
+        pts_init = np.float32([[p[0] * w, p[1] * h] for p in initial_corners_norm])
+
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8)).apply(gray)
+        edges = cv2.Canny(clahe, 50, 150)
+        lines = cv2.HoughLinesP(edges, 1, np.pi/180, threshold=30, minLineLength=25, maxLineGap=12)
+        if lines is None:
+            return initial_corners_norm, 0
+
+        refined = np.copy(pts_init)
+        snapped_count = 0
+
+        for i in range(4):
+            target = pts_init[i]
+            h_segs, v_segs = [], []
+            for l in lines:
+                x1, y1, x2, y2 = l.flatten()
+                deg = np.degrees(np.arctan2(abs(y2 - y1), abs(x2 - x1)))
+                d1 = np.hypot(x1 - target[0], y1 - target[1])
+                d2 = np.hypot(x2 - target[0], y2 - target[1])
+                if min(d1, d2) < 45:
+                    if deg < 30:
+                        h_segs.append((x1, y1, x2, y2))
+                    elif deg > 60:
+                        v_segs.append((x1, y1, x2, y2))
+
+            inter_candidates = []
+            for x1, y1, x2, y2 in h_segs:
+                dx1, dy1 = x2 - x1, y2 - y1
+                for x3, y3, x4, y4 in v_segs:
+                    dx2, dy2 = x4 - x3, y4 - y3
+                    det = -dy1 * dx2 + dx1 * dy2
+                    if abs(det) < 1e-3: continue
+                    c1 = x1 * dy1 - y1 * dx1
+                    c2 = x3 * dy2 - y3 * dx2
+                    xi = (c1 * dx2 - dx1 * c2) / (-det)
+                    yi = (c1 * dy2 - dy1 * c2) / (-det)
+                    d = np.hypot(xi - target[0], yi - target[1])
+                    if d < max_dist_px:
+                        inter_candidates.append(([xi, yi], d))
+
+            if inter_candidates:
+                inter_candidates.sort(key=lambda item: item[1])
+                refined[i] = inter_candidates[0][0]
+                snapped_count += 1
+
+        refined_norm = [[float(p[0] / w), float(p[1] / h)] for p in refined]
+        return refined_norm, snapped_count
+
     def auto_detect_board(self, raw_frame):
-        """Détection automatique du plateau d'échecs (ArUco en priorité, puis fallback grille/contours)."""
+        """
+        Détection automatique selon l'option choisie :
+        - 'ARUCO'   : Détection uniquement par marqueurs ArUco (+ retrait bordure)
+        - 'HOUGH'   : Détection uniquement par Transformée de Hough pure sur les lignes
+        - 'COUPLED' : Couplage ArUco + Hough (coins ArUco recalés sur les intersections réelles)
+        """
         if raw_frame is None:
             return False, "Aucune image reçue", None
 
-        # Priorité 1 : Marqueurs ArUco
-        has_aruco, aruco_corners, aruco_msg = self.detect_aruco_corners(raw_frame)
-        if has_aruco:
-            self.set_corners(aruco_corners)
-            if self.refit_grid(raw_frame):
-                aruco_msg += f" + Quadrillage aligné ({self.refined_grid_count}/14 lignes)"
-            return True, aruco_msg, aruco_corners
+        method = self.detection_config.get("detection_method", "COUPLED").upper()
+
+        if method == "HOUGH":
+            ok, corners, msg = self.detect_corners_hough(raw_frame)
+            if ok:
+                self.set_corners(corners)
+                if self.refit_grid(raw_frame):
+                    msg += f" + Quadrillage ({self.refined_grid_count}/14 lignes)"
+                return True, msg, corners
+
+        elif method == "ARUCO":
+            has_aruco, aruco_corners, aruco_msg = self.detect_aruco_corners(raw_frame)
+            if has_aruco:
+                self.set_corners(aruco_corners)
+                if self.refit_grid(raw_frame):
+                    aruco_msg += f" + Quadrillage ({self.refined_grid_count}/14 lignes)"
+                return True, aruco_msg, aruco_corners
+
+        else: # 'COUPLED' (ArUco + Hough combiné)
+            has_aruco, aruco_corners, aruco_msg = self.detect_aruco_corners(raw_frame)
+            if has_aruco:
+                coupled_corners, snap_count = self.snap_corners_to_hough_intersections(raw_frame, aruco_corners)
+                self.set_corners(coupled_corners)
+                snap_msg = f" + Couplage Hough ({snap_count}/4 coins recalés)" if snap_count > 0 else ""
+                if self.refit_grid(raw_frame):
+                    snap_msg += f" + Quadrillage ({self.refined_grid_count}/14 lignes)"
+                return True, aruco_msg + snap_msg, coupled_corners
+
+            # Fallback Hough pure si ArUco non détecté
+            ok_hough, hough_corners, hough_msg = self.detect_corners_hough(raw_frame)
+            if ok_hough:
+                self.set_corners(hough_corners)
+                if self.refit_grid(raw_frame):
+                    hough_msg += f" + Quadrillage ({self.refined_grid_count}/14 lignes)"
+                return True, "ArUco partiel -> " + hough_msg, hough_corners
 
         h, w = raw_frame.shape[:2]
         gray = cv2.cvtColor(raw_frame, cv2.COLOR_BGR2GRAY)
