@@ -126,7 +126,6 @@ function render2DMoveArrow() {
     arrowLine.setAttribute('marker-end', isBot ? 'url(#arrowhead-bot)' : 'url(#arrowhead)');
     arrowLine.style.display = 'block';
 }
-}
 
 function initEventListeners() {
     // Caméra
